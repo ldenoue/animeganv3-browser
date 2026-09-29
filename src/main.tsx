@@ -119,8 +119,16 @@ function App() {
 
   const handlePlay = () => {
     if (!processing) return;
+    const video = videoRef.current;
+    if (!video) return;
     runningRef.current = true;
-    void processNextFrame();
+    if (video.requestVideoFrameCallback) {
+      frameRequestRef.current = video.requestVideoFrameCallback(() => void processNextFrame());
+    } else if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      requestAnimationFrame(() => void processNextFrame());
+    } else {
+      video.addEventListener("loadeddata", () => void processNextFrame(), { once: true });
+    }
   };
 
   const handlePause = () => { runningRef.current = false; };
@@ -161,9 +169,12 @@ function App() {
             <div className="tiles">
               <article className="tile source-tile">
                 <div className="tile-label"><span>ORIGINAL</span><small>INPUT</small></div>
-                <video ref={videoRef} className={isPortrait ? "portrait-input" : "landscape-input"} src={videoUrl} muted loop playsInline controls={!processing}
+                <video ref={videoRef} className={isPortrait ? "portrait-input" : "landscape-input"} src={videoUrl} muted loop playsInline preload="auto" controls={!processing}
                   onLoadedMetadata={(event) => {
                     setIsPortrait(event.currentTarget.videoHeight > event.currentTarget.videoWidth);
+                    setStatusText("Decoding first frame…");
+                  }}
+                  onLoadedData={() => {
                     setStatus("ready");
                     setStatusText("Video ready");
                   }}

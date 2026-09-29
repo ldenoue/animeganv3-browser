@@ -15,6 +15,8 @@ export class AnimeGanRunner {
   private progress?: (received: number, total: number) => void;
   private frameCanvas = document.createElement("canvas");
   private frameContext = this.frameCanvas.getContext("2d")!;
+  private sourceCanvas = document.createElement("canvas");
+  private sourceContext = this.sourceCanvas.getContext("2d")!;
   backend: Backend = "wasm";
   model?: AnimeModel;
   backgroundColor = "#00ff00";
@@ -58,7 +60,13 @@ export class AnimeGanRunner {
 
   async render(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, output: HTMLCanvasElement) {
     if (!this.model) throw new Error("Model is not loaded");
-    const bitmap = await createImageBitmap(source);
+    if (source instanceof HTMLVideoElement && source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      throw new Error("Waiting for the first decoded video frame");
+    }
+    this.sourceCanvas.width = sourceWidth;
+    this.sourceCanvas.height = sourceHeight;
+    this.sourceContext.drawImage(source, 0, 0, sourceWidth, sourceHeight);
+    const bitmap = await createImageBitmap(this.sourceCanvas);
     const background = this.backgroundColor.match(/[a-f\d]{2}/gi)?.map((channel) => Number.parseInt(channel, 16)) ?? [0, 255, 0];
     const reply = await this.send({ type: "render", bitmap, sourceWidth, sourceHeight, background, useMediaPipe: this.useMediaPipe }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
