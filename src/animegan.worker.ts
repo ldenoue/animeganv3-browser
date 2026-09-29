@@ -29,7 +29,7 @@ async function ensureSegmenter() {
     wasmBinaryPath: visionWasmBinary,
   }, {
     baseOptions: {
-      modelAssetPath: "/models/selfie_multiclass_256x256.tflite",
+      modelAssetPath: `${import.meta.env.BASE_URL}models/selfie_multiclass_256x256.tflite`,
       delegate: "CPU",
     },
     runningMode: "IMAGE",

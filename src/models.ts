@@ -7,36 +7,38 @@ export type AnimeModel = {
   stride?: 8 | 16;
 };
 
+const modelUrl = (fileName: string) => `${import.meta.env.BASE_URL}models/${fileName}`;
+
 export const MODELS: AnimeModel[] = [
   {
     id: "hayao-36",
     label: "Hayao",
     description: "Warm, painterly landscape style",
-    url: "/models/AnimeGANv3_Hayao_36.onnx",
+    url: modelUrl("AnimeGANv3_Hayao_36.onnx"),
   },
   {
     id: "ghibli-c1",
     label: "Ghibli C1",
     description: "Warm, hand-painted Ghibli portrait style",
-    url: "/models/AnimeGANv3_large_Ghibli_c1_e299.onnx",
+    url: modelUrl("AnimeGANv3_large_Ghibli_c1_e299.onnx"),
   },
   {
     id: "shinkai-37",
     label: "Shinkai",
     description: "Crisp light and cinematic color",
-    url: "/models/AnimeGANv3_Shinkai_37.onnx",
+    url: modelUrl("AnimeGANv3_Shinkai_37.onnx"),
   },
   {
     id: "comic-jp-face",
     label: "Comic",
     description: "Japanese comic portrait style",
-    url: "/models/AnimeGANv3_JP_face_v1.0.onnx",
+    url: modelUrl("AnimeGANv3_JP_face_v1.0.onnx"),
   },
   {
     id: "cute-tiny",
     label: "Cute",
     description: "Soft, playful cartoon portraits",
-    url: "/models/AnimeGANv3_tiny_Cute.onnx",
+    url: modelUrl("AnimeGANv3_tiny_Cute.onnx"),
     stride: 16,
   },
   {

@@ -11,6 +11,10 @@ npm run dev
 
 Open the local URL in a current Chrome or Edge browser for WebGPU acceleration. Drop a video, then select **Run AnimeGAN**. Frames are processed live and never uploaded.
 
+## Live demo
+
+The `main` branch is deployed to [GitHub Pages](https://ldenoue.github.io/animeganv3-browser/) with the workflow in `.github/workflows/deploy-pages.yml`.
+
 ## Models
 
 Models are configured in `src/models.ts`. The app includes Ghibli C1, Hayao, Shinkai, Comic, and Cute AnimeGANv3 ONNX models in `public/models/`.
