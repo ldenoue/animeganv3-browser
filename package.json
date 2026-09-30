@@ -10,16 +10,8 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
-    "@vitejs/plugin-react": "latest",
-    "lucide-react": "latest",
     "onnxruntime-web": "latest",
-    "react": "latest",
-    "react-dom": "latest",
     "typescript": "latest",
     "vite": "latest"
-  },
-  "devDependencies": {
-    "@types/react": "latest",
-    "@types/react-dom": "latest"
   }
 }

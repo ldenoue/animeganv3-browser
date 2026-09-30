@@ -4,12 +4,20 @@ export type AnimeModel = {
   description: string;
   url?: string;
   engine?: "animegan" | "palette";
+  colorOrder?: "rgb" | "bgr";
   stride?: 8 | 16;
 };
 
 const modelUrl = (fileName: string) => `${import.meta.env.BASE_URL}models/${fileName}`;
 
 export const MODELS: AnimeModel[] = [
+  {
+    id: "white-box",
+    label: "White Box",
+    description: "Clean, softly shaded cartoon rendering",
+    url: modelUrl("WhiteBox_Cartoonization.onnx"),
+    colorOrder: "bgr",
+  },
   {
     id: "hayao-36",
     label: "Hayao",

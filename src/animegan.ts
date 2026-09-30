@@ -9,7 +9,7 @@ type Reply =
   | { type: "error"; requestId: number; message: string };
 
 export class AnimeGanRunner {
-  private worker = new Worker(new URL("./animegan.worker.ts", import.meta.url), { type: "module" });
+  private worker?: Worker;
   private pending = new Map<number, { resolve: (reply: Reply) => void; reject: (error: Error) => void }>();
   private requestId = 0;
   private progress?: (received: number, total: number) => void;
@@ -20,10 +20,12 @@ export class AnimeGanRunner {
   backend: Backend = "wasm";
   model?: AnimeModel;
   backgroundColor = "#00ff00";
-  useMediaPipe = true;
+  useMediaPipe = false;
 
-  constructor() {
-    this.worker.onmessage = ({ data }: MessageEvent<Reply>) => {
+  private ensureWorker() {
+    if (this.worker) return this.worker;
+    const worker = new Worker(new URL("./animegan.worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = ({ data }: MessageEvent<Reply>) => {
       if (data.type === "progress") {
         this.progress?.(data.received, data.total);
         return;
@@ -34,24 +36,42 @@ export class AnimeGanRunner {
       if (data.type === "error") pending.reject(new Error(data.message));
       else pending.resolve(data);
     };
-    this.worker.onerror = ({ message }) => {
+    worker.onerror = ({ message }) => {
       const error = new Error(message || "Inference worker stopped");
       this.pending.forEach(({ reject }) => reject(error));
       this.pending.clear();
     };
+    this.worker = worker;
+    return worker;
   }
 
   private send(message: object, transfer: Transferable[] = []) {
     const requestId = ++this.requestId;
     const reply = new Promise<Reply>((resolve, reject) => this.pending.set(requestId, { resolve, reject }));
-    this.worker.postMessage({ ...message, requestId }, transfer);
+    this.ensureWorker().postMessage({ ...message, requestId }, transfer);
     return reply;
+  }
+
+  dispose() {
+    this.worker?.terminate();
+    this.worker = undefined;
+    const error = new Error("Inference worker stopped");
+    this.pending.forEach(({ reject }) => reject(error));
+    this.pending.clear();
+    this.progress = undefined;
+    this.model = undefined;
   }
 
   async load(model: AnimeModel, onProgress?: (received: number, total: number) => void) {
     if (this.model?.id === model.id) return;
     this.progress = onProgress;
-    const reply = await this.send({ type: "load", url: model.url, stride: model.stride ?? 8, engine: model.engine ?? "animegan" });
+    const reply = await this.send({
+      type: "load",
+      url: model.url,
+      stride: model.stride ?? 8,
+      engine: model.engine ?? "animegan",
+      colorOrder: model.colorOrder ?? "rgb",
+    });
     if (reply.type !== "loaded") throw new Error("Unexpected model response");
     this.backend = reply.backend;
     this.model = model;

@@ -31,6 +31,7 @@ h1 em { color: #e4562a; font-family: 'Playfair Display', serif; font-weight: 600
 .drop-zone strong { font-size: 20px; margin-bottom: 8px; }
 .drop-zone > span:not(.upload-icon) { font-size: 12px; color: #86847b; }
 .choose-button, .run-button { margin-top: 24px; border: 0; background: #22231f; color: #fff; padding: 13px 21px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.example-button { margin-top: 10px; border: 0; background: transparent; color: #e4562a; padding: 6px 12px; cursor: pointer; font-size: 11px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
 .workspace { border: 1px solid #bdb8ad; background: rgba(255,255,255,.25); }
 .workspace-head { min-height: 53px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; border-bottom: 1px solid #c7c1b6; font-size: 12px; }
 .workspace-head strong { font-weight: 600; }

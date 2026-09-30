@@ -5,13 +5,21 @@ import visionWasmLoader from "./vendor/mediapipe/vision_wasm_module_internal.js?
 import visionWasmBinary from "./vendor/mediapipe/vision_wasm_module_internal.wasm?url";
 import { vectorizeEdges, vectorizeMaskContours } from "./vectorize-edges";
 
-type LoadMessage = { type: "load"; requestId: number; url?: string; stride: 8 | 16; engine: "animegan" | "palette" };
+type LoadMessage = {
+  type: "load";
+  requestId: number;
+  url?: string;
+  stride: 8 | 16;
+  engine: "animegan" | "palette";
+  colorOrder: "rgb" | "bgr";
+};
 type RenderMessage = { type: "render"; requestId: number; bitmap: ImageBitmap; sourceWidth: number; sourceHeight: number; background: number[]; useMediaPipe: boolean };
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
 let currentEngine: "animegan" | "palette" = "animegan";
+let modelColorOrder: "rgb" | "bgr" = "rgb";
 let modelStride: 8 | 16 = 8;
 const canvas = new OffscreenCanvas(1, 1);
 const context = canvas.getContext("2d", { willReadFrequently: true })!;
@@ -38,8 +46,11 @@ async function ensureSegmenter() {
   });
 }
 
-async function loadModel({ requestId, url, stride, engine }: LoadMessage) {
+async function loadModel({ requestId, url, stride, engine, colorOrder }: LoadMessage) {
+  await session?.release();
+  session = undefined;
   currentEngine = engine;
+  modelColorOrder = colorOrder;
   if (engine === "palette") {
     backend = "canvas";
     send({ type: "loaded", requestId, backend });
@@ -280,18 +291,23 @@ async function renderFrame(message: RenderMessage) {
   const rgb = new Float32Array(width * height * 3);
   for (let pixel = 0, tensor = 0; pixel < rgba.length; pixel += 4) {
     const mix = alpha[pixel] / 255;
-    rgb[tensor++] = (rgba[pixel] * mix + backgroundRed * (1 - mix)) / 127.5 - 1;
-    rgb[tensor++] = (rgba[pixel + 1] * mix + backgroundGreen * (1 - mix)) / 127.5 - 1;
-    rgb[tensor++] = (rgba[pixel + 2] * mix + backgroundBlue * (1 - mix)) / 127.5 - 1;
+    const red = rgba[pixel] * mix + backgroundRed * (1 - mix);
+    const green = rgba[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    const blue = rgba[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    rgb[tensor++] = (modelColorOrder === "bgr" ? blue : red) / 127.5 - 1;
+    rgb[tensor++] = green / 127.5 - 1;
+    rgb[tensor++] = (modelColorOrder === "bgr" ? red : blue) / 127.5 - 1;
   }
   const animeSession = session!;
   const results = await animeSession.run({ [animeSession.inputNames[0]]: new ort.Tensor("float32", rgb, [1, height, width, 3]) });
   const data = results[animeSession.outputNames[0]].data as Float32Array;
   const pixels = new Uint8ClampedArray(width * height * 4);
   for (let i = 0, out = 0; i < data.length; i += 3) {
-    pixels[out++] = Math.max(0, Math.min(255, (data[i] + 1) * 127.5));
+    const red = modelColorOrder === "bgr" ? data[i + 2] : data[i];
+    const blue = modelColorOrder === "bgr" ? data[i] : data[i + 2];
+    pixels[out++] = Math.max(0, Math.min(255, (red + 1) * 127.5));
     pixels[out++] = Math.max(0, Math.min(255, (data[i + 1] + 1) * 127.5));
-    pixels[out++] = Math.max(0, Math.min(255, (data[i + 2] + 1) * 127.5));
+    pixels[out++] = Math.max(0, Math.min(255, (blue + 1) * 127.5));
     pixels[out++] = 255;
   }
   send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);

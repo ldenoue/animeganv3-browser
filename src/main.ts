@@ -1,0 +1,291 @@
+import { AnimeGanRunner, type Backend } from "./animegan";
+import { MODELS, type AnimeModel } from "./models";
+import "./styles.css";
+
+type Status = "idle" | "loading" | "ready" | "error";
+
+const icon = (name: "code" | "film" | "play" | "restart" | "sparkles" | "upload" | "x", size: number) => {
+  const paths = {
+    code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
+    film: '<rect width="20" height="20" x="2" y="2" rx="2.18" ry="2.18"/><line x1="7" x2="7" y1="2" y2="22"/><line x1="17" x2="17" y1="2" y2="22"/><line x1="2" x2="22" y1="12" y2="12"/><line x1="2" x2="7" y1="7" y2="7"/><line x1="2" x2="7" y1="17" y2="17"/><line x1="17" x2="22" y1="17" y2="17"/><line x1="17" x2="22" y1="7" y2="7"/>',
+    play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+    restart: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+    sparkles: '<path d="m12 3-1.9 4.8L5 10l5.1 2.2L12 17l1.9-4.8L19 10l-5.1-2.2Z"/><path d="m5 3-.6 1.4L3 5l1.4.6L5 7l.6-1.4L7 5l-1.4-.6Z"/><path d="m19 17-.9 2.1L16 20l2.1.9L19 23l.9-2.1L22 20l-2.1-.9Z"/>',
+    upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  };
+  return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
+};
+
+const root = document.querySelector<HTMLDivElement>("#root")!;
+root.innerHTML = `
+  <div class="app-shell">
+    <header>
+      <a class="brand" href="#" aria-label="Frame by Frame home"><span class="brand-mark">${icon("film", 19)}</span><span>FRAME <i>BY</i> FRAME</span></a>
+      <div class="header-meta"><span class="privacy"><span></span> Runs entirely on your device</span><a href="https://github.com/ldenoue/animeganv3-browser" target="_blank" rel="noreferrer">${icon("code", 18)} Source</a></div>
+    </header>
+    <main>
+      <section class="intro">
+        <div class="eyebrow"><span>01</span> VIDEO TO ANIME</div>
+        <h1>See your world<br><em>drawn differently.</em></h1>
+        <p>Drop in a video and your selected model redraws each frame locally. Optionally enable MediaPipe to place detected people on chroma green first.</p>
+      </section>
+      <label class="drop-zone">
+        <input id="file-input" type="file" accept="video/*">
+        <span class="upload-icon">${icon("upload", 26)}</span>
+        <strong>Drop your video here</strong>
+        <span>or click to browse · MP4, WebM, MOV</span>
+        <span class="choose-button">Choose a video</span>
+        <button class="example-button" type="button">Try example video</button>
+      </label>
+      <section class="workspace" hidden>
+        <div class="workspace-head">
+          <div><span class="step">02</span><strong id="file-name"></strong></div>
+          <button class="remove" type="button" aria-label="Remove video">${icon("x", 17)} Replace</button>
+        </div>
+        <div class="tiles">
+          <article class="tile source-tile">
+            <div class="tile-label"><span>ORIGINAL</span><small>INPUT</small></div>
+            <video muted loop playsinline preload="auto" controls></video>
+            <div class="crop-guide"><span>FULL HEIGHT · 256²</span></div>
+          </article>
+          <article class="tile result-tile">
+            <div class="tile-label"><span id="result-model"></span><small id="result-backend">FULL FRAME</small></div>
+            <canvas></canvas>
+            <div class="result-empty">${icon("sparkles", 30)}<span>Your stylized frames<br>will appear here</span></div>
+          </article>
+        </div>
+        <div class="control-bar">
+          <div class="status status-idle"><span></span><span id="status-text">Drop a video to begin</span></div>
+          <button class="run-button" type="button">${icon("play", 17)} Run model</button>
+          <div class="live-stats" hidden><b>—</b> FPS <button type="button">${icon("restart", 15)} Restart</button></div>
+        </div>
+      </section>
+      <section class="style-strip">
+        <span class="step">STYLE</span>
+        <div class="style-options">
+          ${MODELS.map((model) => `<button type="button" data-model="${model.id}" aria-pressed="false"><strong>${model.label}</strong><small>${model.description}</small></button>`).join("")}
+        </div>
+        <label class="background-picker">
+          <span>BACKGROUND</span>
+          <input type="color" value="#00ff00" aria-label="Background color" disabled>
+          <code>#00FF00</code>
+        </label>
+        <label class="segmentation-toggle">
+          <input type="checkbox">
+          <span><strong>PERSON MASK</strong><small>Full frame</small></span>
+        </label>
+      </section>
+    </main>
+    <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
+  </div>`;
+
+const find = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
+const dropZone = find<HTMLLabelElement>(".drop-zone");
+const fileInput = find<HTMLInputElement>("#file-input");
+const exampleButton = find<HTMLButtonElement>(".example-button");
+const workspace = find<HTMLElement>(".workspace");
+const fileName = find<HTMLElement>("#file-name");
+const removeButton = find<HTMLButtonElement>(".remove");
+const video = find<HTMLVideoElement>(".source-tile video");
+const canvas = find<HTMLCanvasElement>(".result-tile canvas");
+const resultModel = find<HTMLElement>("#result-model");
+const resultBackend = find<HTMLElement>("#result-backend");
+const resultEmpty = find<HTMLElement>(".result-empty");
+const statusElement = find<HTMLElement>(".status");
+const statusText = find<HTMLElement>("#status-text");
+const runButton = find<HTMLButtonElement>(".run-button");
+const liveStats = find<HTMLElement>(".live-stats");
+const fpsText = find<HTMLElement>(".live-stats b");
+const restartButton = find<HTMLButtonElement>(".live-stats button");
+const styleButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-model]")];
+const backgroundInput = find<HTMLInputElement>(".background-picker input");
+const backgroundCode = find<HTMLElement>(".background-picker code");
+const maskInput = find<HTMLInputElement>(".segmentation-toggle input");
+const maskStatus = find<HTMLElement>(".segmentation-toggle small");
+
+const runner = new AnimeGanRunner();
+let selectedModel = MODELS[0];
+let videoUrl: string | undefined;
+let ownsVideoUrl = false;
+let processing = false;
+let running = false;
+let frameRequest: number | undefined;
+
+function setStatus(status: Status, text: string) {
+  statusElement.className = `status status-${status}`;
+  statusText.textContent = text;
+  runButton.disabled = status === "loading";
+}
+
+function setProcessing(value: boolean) {
+  processing = value;
+  runButton.hidden = value;
+  liveStats.hidden = !value;
+  resultEmpty.hidden = value;
+  video.controls = !value;
+}
+
+function updateSelectedModel() {
+  for (const button of styleButtons) {
+    const active = button.dataset.model === selectedModel.id;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+  resultModel.textContent = selectedModel.label.toUpperCase();
+}
+
+function stopProcessing() {
+  running = false;
+  if (frameRequest !== undefined && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameRequest);
+  frameRequest = undefined;
+}
+
+function releaseVideoUrl() {
+  if (videoUrl && ownsVideoUrl) URL.revokeObjectURL(videoUrl);
+  videoUrl = undefined;
+  ownsVideoUrl = false;
+}
+
+function clearVideo() {
+  stopProcessing();
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  releaseVideoUrl();
+  fileInput.value = "";
+  canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  workspace.hidden = true;
+  dropZone.hidden = false;
+  setProcessing(false);
+  fpsText.textContent = "—";
+  setStatus("idle", "Drop a video to begin");
+}
+
+function loadVideo(url: string, name: string, revokeOnRelease: boolean) {
+  stopProcessing();
+  releaseVideoUrl();
+  videoUrl = url;
+  ownsVideoUrl = revokeOnRelease;
+  fileName.textContent = name;
+  video.src = videoUrl;
+  dropZone.hidden = true;
+  workspace.hidden = false;
+  fpsText.textContent = "—";
+  setProcessing(false);
+  setStatus("loading", "Preparing video…");
+}
+
+function acceptFile(file?: File) {
+  if (!file || !file.type.startsWith("video/")) {
+    setStatus("error", "Please choose a video file");
+    return;
+  }
+  loadVideo(URL.createObjectURL(file), file.name, true);
+}
+
+function scheduleNextFrame() {
+  if (!running) return;
+  if (video.requestVideoFrameCallback) frameRequest = video.requestVideoFrameCallback(() => void processNextFrame());
+  else requestAnimationFrame(() => void processNextFrame());
+}
+
+async function processNextFrame() {
+  if (!running || video.paused || video.ended) return;
+  const started = performance.now();
+  try {
+    await runner.render(video, video.videoWidth, video.videoHeight, canvas);
+    const elapsed = performance.now() - started;
+    fpsText.textContent = (1000 / elapsed).toFixed(1);
+    setStatus("ready", `Live · ${Math.round(elapsed)} ms/frame`);
+  } catch (error) {
+    stopProcessing();
+    setStatus("error", error instanceof Error ? error.message : "Frame processing failed");
+    return;
+  }
+  scheduleNextFrame();
+}
+
+async function beginProcessing() {
+  setProcessing(true);
+  setStatus("loading", `Loading ${selectedModel.label} model…`);
+  try {
+    await runner.load(selectedModel, (loaded, total) => {
+      const percent = total ? Math.round((loaded / total) * 100) : 0;
+      setStatus("loading", `Loading ${selectedModel.label} model${percent ? ` · ${percent}%` : "…"}`);
+    });
+    const backendLabel = runner.backend === "webgpu" ? "WebGPU" : runner.backend === "canvas" ? "Canvas" : "WASM";
+    resultBackend.textContent = backendLabel.toUpperCase();
+    setStatus("ready", `${backendLabel} ready`);
+    running = true;
+    await video.play();
+  } catch (error) {
+    stopProcessing();
+    setProcessing(false);
+    setStatus("error", error instanceof Error ? error.message : "Could not initialize the model");
+  }
+}
+
+function chooseModel(model: AnimeModel) {
+  if (model.id === selectedModel.id) return;
+  stopProcessing();
+  video.pause();
+  selectedModel = model;
+  setProcessing(false);
+  fpsText.textContent = "—";
+  resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
+  canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  updateSelectedModel();
+  setStatus(videoUrl ? "ready" : "idle", videoUrl ? `${model.label} selected · ready to run` : "Drop a video to begin");
+}
+
+dropZone.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
+dropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropZone.classList.remove("dragging");
+  acceptFile(event.dataTransfer?.files[0]);
+});
+fileInput.addEventListener("change", () => acceptFile(fileInput.files?.[0]));
+exampleButton.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  loadVideo(`${import.meta.env.BASE_URL}examples/black.mp4`, "black.mp4 · example", false);
+});
+removeButton.addEventListener("click", clearVideo);
+runButton.addEventListener("click", () => void beginProcessing());
+restartButton.addEventListener("click", () => { video.currentTime = 0; });
+video.addEventListener("loadedmetadata", () => {
+  video.className = video.videoHeight > video.videoWidth ? "portrait-input" : "landscape-input";
+  setStatus("loading", "Decoding first frame…");
+});
+video.addEventListener("loadeddata", () => setStatus("ready", "Video ready"));
+video.addEventListener("play", () => {
+  if (!processing) return;
+  running = true;
+  scheduleNextFrame();
+});
+video.addEventListener("pause", () => { running = false; });
+for (const button of styleButtons) {
+  button.addEventListener("click", () => {
+    const model = MODELS.find(({ id }) => id === button.dataset.model);
+    if (model) chooseModel(model);
+  });
+}
+backgroundInput.addEventListener("input", () => {
+  runner.backgroundColor = backgroundInput.value;
+  backgroundCode.textContent = backgroundInput.value.toUpperCase();
+});
+maskInput.addEventListener("change", () => {
+  runner.useMediaPipe = maskInput.checked;
+  backgroundInput.disabled = !maskInput.checked;
+  maskStatus.textContent = maskInput.checked ? "MediaPipe on" : "Full frame";
+  if (!processing) resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
+});
+window.addEventListener("beforeunload", () => {
+  stopProcessing();
+  releaseVideoUrl();
+  runner.dispose();
+});
+
+updateSelectedModel();
