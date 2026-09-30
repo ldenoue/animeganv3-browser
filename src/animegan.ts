@@ -21,6 +21,8 @@ export class AnimeGanRunner {
   model?: AnimeModel;
   backgroundColor = "#00ff00";
   useMediaPipe = false;
+  mirrorInput = false;
+  inputSize = 256;
 
   private ensureWorker() {
     if (this.worker) return this.worker;
@@ -83,12 +85,29 @@ export class AnimeGanRunner {
     if (source instanceof HTMLVideoElement && source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
       throw new Error("Waiting for the first decoded video frame");
     }
-    this.sourceCanvas.width = sourceWidth;
-    this.sourceCanvas.height = sourceHeight;
-    this.sourceContext.drawImage(source, 0, 0, sourceWidth, sourceHeight);
+    const inputSize = this.inputSize;
+    this.sourceCanvas.width = inputSize;
+    this.sourceCanvas.height = inputSize;
+    this.sourceContext.save();
+    this.sourceContext.fillStyle = "#000000";
+    this.sourceContext.fillRect(0, 0, inputSize, inputSize);
+    if (this.mirrorInput) {
+      this.sourceContext.translate(inputSize, 0);
+      this.sourceContext.scale(-1, 1);
+    }
+    if (sourceWidth >= sourceHeight) {
+      const sourceSize = sourceHeight;
+      const sourceX = (sourceWidth - sourceSize) / 2;
+      this.sourceContext.drawImage(source, sourceX, 0, sourceSize, sourceSize, 0, 0, inputSize, inputSize);
+    } else {
+      const destinationWidth = sourceWidth * (inputSize / sourceHeight);
+      const destinationX = (inputSize - destinationWidth) / 2;
+      this.sourceContext.drawImage(source, 0, 0, sourceWidth, sourceHeight, destinationX, 0, destinationWidth, inputSize);
+    }
+    this.sourceContext.restore();
     const bitmap = await createImageBitmap(this.sourceCanvas);
     const background = this.backgroundColor.match(/[a-f\d]{2}/gi)?.map((channel) => Number.parseInt(channel, 16)) ?? [0, 255, 0];
-    const reply = await this.send({ type: "render", bitmap, sourceWidth, sourceHeight, background, useMediaPipe: this.useMediaPipe }, [bitmap]);
+    const reply = await this.send({ type: "render", bitmap, sourceWidth: inputSize, sourceHeight: inputSize, background, useMediaPipe: this.useMediaPipe }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
 
     this.frameCanvas.width = reply.width;

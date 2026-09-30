@@ -127,7 +127,9 @@ function buildPalette(data: Uint8ClampedArray, count = 12) {
 }
 
 function paletteFrame(original: ImageData, alpha: Uint8ClampedArray, backgroundColor: number[], drawSilhouette: boolean) {
-  const blurred = new OffscreenCanvas(256, 256);
+  const width = original.width;
+  const height = original.height;
+  const blurred = new OffscreenCanvas(width, height);
   const blurredContext = blurred.getContext("2d")!;
   // Enough pre-blur to merge video noise without erasing facial structure.
   blurredContext.filter = "blur(2px)";
@@ -155,14 +157,14 @@ function paletteFrame(original: ImageData, alpha: Uint8ClampedArray, backgroundC
   lowContext.putImageData(quantized, 0, 0);
 
   // Preserve the small palette while avoiding hard 8x8 pixel blocks.
-  const smooth = new OffscreenCanvas(256, 256);
+  const smooth = new OffscreenCanvas(width, height);
   const smoothContext = smooth.getContext("2d", { willReadFrequently: true })!;
   smoothContext.imageSmoothingEnabled = true;
   smoothContext.imageSmoothingQuality = "high";
-  smoothContext.drawImage(low, 0, 0, 256, 256);
-  const smoothData = smoothContext.getImageData(0, 0, 256, 256).data;
+  smoothContext.drawImage(low, 0, 0, width, height);
+  const smoothData = smoothContext.getImageData(0, 0, width, height).data;
   const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
-  const output = new ImageData(256, 256);
+  const output = new ImageData(width, height);
   for (let pixel = 0; pixel < output.data.length; pixel += 4) {
     const mask = alpha[pixel] / 255;
     let selected = palette[0];
@@ -203,7 +205,7 @@ function paletteFrame(original: ImageData, alpha: Uint8ClampedArray, backgroundC
     }
   };
 
-  const internalEdges = vectorizeEdges(original.data, alpha, 256, 256, 50, 128, "canny", "perceptual");
+  const internalEdges = vectorizeEdges(original.data, alpha, width, height, 50, 128, "canny", "perceptual");
   const pathLength = (path: { points: Array<{ x: number; y: number }> }) => path.points.slice(1).reduce((length, point, index) => {
     const previous = path.points[index];
     return length + Math.hypot(point.x - previous.x, point.y - previous.y);
@@ -218,16 +220,16 @@ function paletteFrame(original: ImageData, alpha: Uint8ClampedArray, backgroundC
     .map(({ path }: { path: typeof internalEdges.paths[number] }) => path);
   drawPaths(structuralEdges, "rgba(35, 25, 21, 0.62)", 1.15);
   if (drawSilhouette) {
-    const silhouette = vectorizeMaskContours(alpha, 256, 256, 82, 128);
+    const silhouette = vectorizeMaskContours(alpha, width, height, 82, 128);
     drawPaths(silhouette.paths, "rgba(30, 22, 19, 0.84)", 1.7);
   }
-  return smoothContext.getImageData(0, 0, 256, 256).data;
+  return smoothContext.getImageData(0, 0, width, height).data;
 }
 
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
-  const width = 256;
-  const height = 256;
+  const width = message.sourceWidth;
+  const height = message.sourceHeight;
   canvas.width = width;
   canvas.height = height;
   context.fillStyle = "#000000";
@@ -313,7 +315,7 @@ async function renderFrame(message: RenderMessage) {
   send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
 }
 
-self.onmessage = async ({ data }: MessageEvent<LoadMessage | RenderMessage>) => {
+async function handleMessage(data: LoadMessage | RenderMessage) {
   try {
     if (data.type === "load") await loadModel(data);
     else await renderFrame(data);
@@ -321,4 +323,9 @@ self.onmessage = async ({ data }: MessageEvent<LoadMessage | RenderMessage>) => 
     if (data.type === "render") data.bitmap.close();
     send({ type: "error", requestId: data.requestId, message: error instanceof Error ? error.message : String(error) });
   }
+}
+
+let operationQueue = Promise.resolve();
+self.onmessage = ({ data }: MessageEvent<LoadMessage | RenderMessage>) => {
+  operationQueue = operationQueue.then(() => handleMessage(data));
 };

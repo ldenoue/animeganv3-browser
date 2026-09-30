@@ -1,6 +1,6 @@
 # Frame by Frame
 
-Local, in-browser video stylization using a framework-free HTML and TypeScript interface, optional MediaPipe multiclass segmentation, and ONNX Runtime Web. WebGPU is selected when available, with a WebAssembly fallback. Frames are mapped to 256×256 while preserving their full height: landscape sides are center-cropped and portrait videos receive black side borders. Full-frame processing is the default; when the person mask is enabled, MediaPipe places the detected person over chroma green before the complete square frame is passed through the selected cartoonization model.
+Local, in-browser video stylization using a framework-free HTML and TypeScript interface, optional MediaPipe multiclass segmentation, and ONNX Runtime Web. WebGPU is selected when available, with a WebAssembly fallback. Frames are mapped to a selectable 256×256, 384×384, or 512×512 inference size while preserving their full height: landscape sides are center-cropped and portrait videos receive black side borders. Full-frame processing is the default; when the person mask is enabled, MediaPipe places the detected person over chroma green before the complete square frame is passed through the selected cartoonization model.
 
 ## Run locally
 
@@ -11,7 +11,13 @@ npm run dev
 
 Open the local URL in a current Chrome or Edge browser for WebGPU acceleration. Drop a video, then select **Run model**. Frames are processed live and never uploaded.
 
-The upload area also includes a bundled `black.mp4` example so visitors can try the pipeline immediately without choosing a local file.
+Once a source is ready, selecting a different style automatically loads and runs it. The Run button displays model-loading progress and remains disabled until initialization completes.
+
+The input area also includes a bundled `black.mp4` example and an optional live webcam source. Camera access is requested only after the visitor clicks **Use webcam**, and the stream remains entirely on-device.
+
+Webcam frames are center-cropped or padded and reduced to the selected inference size before being transferred to the inference worker.
+
+Enable **Mirror input** to flip both the source preview and the frames passed into the selected model.
 
 ## Live demo
 

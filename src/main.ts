@@ -30,14 +30,18 @@ root.innerHTML = `
         <h1>See your world<br><em>drawn differently.</em></h1>
         <p>Drop in a video and your selected model redraws each frame locally. Optionally enable MediaPipe to place detected people on chroma green first.</p>
       </section>
-      <label class="drop-zone">
+      <div class="drop-zone">
         <input id="file-input" type="file" accept="video/*">
         <span class="upload-icon">${icon("upload", 26)}</span>
         <strong>Drop your video here</strong>
-        <span>or click to browse · MP4, WebM, MOV</span>
-        <span class="choose-button">Choose a video</span>
-        <button class="example-button" type="button">Try example video</button>
-      </label>
+        <span>or choose another input · MP4, WebM, MOV</span>
+        <div class="source-actions">
+          <label class="choose-button" for="file-input">Choose a video</label>
+          <button class="example-button" type="button">Try example</button>
+          <button class="webcam-button" type="button">Use webcam</button>
+        </div>
+        <span class="source-message" role="status"></span>
+      </div>
       <section class="workspace" hidden>
         <div class="workspace-head">
           <div><span class="step">02</span><strong id="file-name"></strong></div>
@@ -57,7 +61,7 @@ root.innerHTML = `
         </div>
         <div class="control-bar">
           <div class="status status-idle"><span></span><span id="status-text">Drop a video to begin</span></div>
-          <button class="run-button" type="button">${icon("play", 17)} Run model</button>
+          <button class="run-button" type="button"><span class="run-spinner" aria-hidden="true"></span><span class="run-icon">${icon("play", 17)}</span><span class="run-label">Run model</span></button>
           <div class="live-stats" hidden><b>—</b> FPS <button type="button">${icon("restart", 15)} Restart</button></div>
         </div>
       </section>
@@ -66,6 +70,14 @@ root.innerHTML = `
         <div class="style-options">
           ${MODELS.map((model) => `<button type="button" data-model="${model.id}" aria-pressed="false"><strong>${model.label}</strong><small>${model.description}</small></button>`).join("")}
         </div>
+        <label class="resolution-picker">
+          <span>RESOLUTION</span>
+          <select aria-label="Inference resolution">
+            <option value="256">256 · Fast</option>
+            <option value="384">384 · Balanced</option>
+            <option value="512">512 · HQ</option>
+          </select>
+        </label>
         <label class="background-picker">
           <span>BACKGROUND</span>
           <input type="color" value="#00ff00" aria-label="Background color" disabled>
@@ -75,15 +87,21 @@ root.innerHTML = `
           <input type="checkbox">
           <span><strong>PERSON MASK</strong><small>Full frame</small></span>
         </label>
+        <label class="mirror-toggle">
+          <input type="checkbox">
+          <span><strong>MIRROR INPUT</strong><small>Off</small></span>
+        </label>
       </section>
     </main>
     <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
   </div>`;
 
 const find = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
-const dropZone = find<HTMLLabelElement>(".drop-zone");
+const dropZone = find<HTMLDivElement>(".drop-zone");
 const fileInput = find<HTMLInputElement>("#file-input");
 const exampleButton = find<HTMLButtonElement>(".example-button");
+const webcamButton = find<HTMLButtonElement>(".webcam-button");
+const sourceMessage = find<HTMLElement>(".source-message");
 const workspace = find<HTMLElement>(".workspace");
 const fileName = find<HTMLElement>("#file-name");
 const removeButton = find<HTMLButtonElement>(".remove");
@@ -92,30 +110,45 @@ const canvas = find<HTMLCanvasElement>(".result-tile canvas");
 const resultModel = find<HTMLElement>("#result-model");
 const resultBackend = find<HTMLElement>("#result-backend");
 const resultEmpty = find<HTMLElement>(".result-empty");
+const cropGuideLabel = find<HTMLElement>(".crop-guide span");
 const statusElement = find<HTMLElement>(".status");
 const statusText = find<HTMLElement>("#status-text");
 const runButton = find<HTMLButtonElement>(".run-button");
+const runLabel = find<HTMLElement>(".run-label");
 const liveStats = find<HTMLElement>(".live-stats");
 const fpsText = find<HTMLElement>(".live-stats b");
 const restartButton = find<HTMLButtonElement>(".live-stats button");
 const styleButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-model]")];
+const resolutionInput = find<HTMLSelectElement>(".resolution-picker select");
 const backgroundInput = find<HTMLInputElement>(".background-picker input");
 const backgroundCode = find<HTMLElement>(".background-picker code");
 const maskInput = find<HTMLInputElement>(".segmentation-toggle input");
 const maskStatus = find<HTMLElement>(".segmentation-toggle small");
+const mirrorInput = find<HTMLInputElement>(".mirror-toggle input");
+const mirrorStatus = find<HTMLElement>(".mirror-toggle small");
 
 const runner = new AnimeGanRunner();
 let selectedModel = MODELS[0];
 let videoUrl: string | undefined;
 let ownsVideoUrl = false;
+let cameraStream: MediaStream | undefined;
 let processing = false;
+let modelLoading = false;
 let running = false;
 let frameRequest: number | undefined;
+let processingGeneration = 0;
 
 function setStatus(status: Status, text: string) {
   statusElement.className = `status status-${status}`;
   statusText.textContent = text;
-  runButton.disabled = status === "loading";
+  runButton.disabled = status === "loading" || modelLoading;
+}
+
+function setModelLoading(value: boolean, model = selectedModel) {
+  modelLoading = value;
+  runButton.classList.toggle("loading", value);
+  runButton.disabled = value;
+  runLabel.textContent = value ? `Loading ${model.label}…` : "Run model";
 }
 
 function setProcessing(value: boolean) {
@@ -123,7 +156,8 @@ function setProcessing(value: boolean) {
   runButton.hidden = value;
   liveStats.hidden = !value;
   resultEmpty.hidden = value;
-  video.controls = !value;
+  video.controls = !value && !cameraStream;
+  restartButton.hidden = Boolean(cameraStream);
 }
 
 function updateSelectedModel() {
@@ -137,6 +171,7 @@ function updateSelectedModel() {
 
 function stopProcessing() {
   running = false;
+  processingGeneration += 1;
   if (frameRequest !== undefined && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameRequest);
   frameRequest = undefined;
 }
@@ -147,9 +182,27 @@ function releaseVideoUrl() {
   ownsVideoUrl = false;
 }
 
+function releaseCamera() {
+  cameraStream?.getTracks().forEach((track) => track.stop());
+  cameraStream = undefined;
+  video.srcObject = null;
+}
+
+function hasVideoSource() {
+  return Boolean(videoUrl || cameraStream);
+}
+
+function updateVideoClasses() {
+  video.classList.toggle("portrait-input", video.videoHeight > video.videoWidth);
+  video.classList.toggle("landscape-input", video.videoHeight <= video.videoWidth);
+  video.classList.toggle("mirrored", mirrorInput.checked);
+}
+
 function clearVideo() {
   stopProcessing();
+  setModelLoading(false);
   video.pause();
+  releaseCamera();
   video.removeAttribute("src");
   video.load();
   releaseVideoUrl();
@@ -164,10 +217,14 @@ function clearVideo() {
 
 function loadVideo(url: string, name: string, revokeOnRelease: boolean) {
   stopProcessing();
+  setModelLoading(false);
+  video.pause();
+  releaseCamera();
   releaseVideoUrl();
   videoUrl = url;
   ownsVideoUrl = revokeOnRelease;
   fileName.textContent = name;
+  video.loop = true;
   video.src = videoUrl;
   dropZone.hidden = true;
   workspace.hidden = false;
@@ -184,10 +241,57 @@ function acceptFile(file?: File) {
   loadVideo(URL.createObjectURL(file), file.name, true);
 }
 
+async function startWebcam() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    sourceMessage.textContent = "This browser does not support webcam capture.";
+    return;
+  }
+  sourceMessage.textContent = "Requesting camera access…";
+  webcamButton.disabled = true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+      audio: false,
+    });
+    stopProcessing();
+    setModelLoading(false);
+    video.pause();
+    releaseCamera();
+    releaseVideoUrl();
+    cameraStream = stream;
+    video.removeAttribute("src");
+    video.srcObject = stream;
+    video.loop = false;
+    fileName.textContent = "Webcam · live";
+    dropZone.hidden = true;
+    workspace.hidden = false;
+    fpsText.textContent = "—";
+    sourceMessage.textContent = "";
+    setProcessing(false);
+    setStatus("loading", "Starting webcam…");
+    await video.play();
+  } catch (error) {
+    sourceMessage.textContent = error instanceof DOMException && error.name === "NotAllowedError"
+      ? "Camera access was not allowed."
+      : "Could not start the webcam.";
+  } finally {
+    webcamButton.disabled = false;
+  }
+}
+
 function scheduleNextFrame() {
-  if (!running) return;
-  if (video.requestVideoFrameCallback) frameRequest = video.requestVideoFrameCallback(() => void processNextFrame());
-  else requestAnimationFrame(() => void processNextFrame());
+  if (!running || frameRequest !== undefined) return;
+  if (video.requestVideoFrameCallback) {
+    frameRequest = video.requestVideoFrameCallback(() => {
+      frameRequest = undefined;
+      void processNextFrame();
+    });
+  } else {
+    frameRequest = requestAnimationFrame(() => {
+      frameRequest = undefined;
+      void processNextFrame();
+    });
+  }
 }
 
 async function processNextFrame() {
@@ -207,20 +311,30 @@ async function processNextFrame() {
 }
 
 async function beginProcessing() {
-  setProcessing(true);
-  setStatus("loading", `Loading ${selectedModel.label} model…`);
+  const generation = ++processingGeneration;
+  const model = selectedModel;
+  setProcessing(false);
+  setModelLoading(true, model);
+  setStatus("loading", `Loading ${model.label} model…`);
   try {
-    await runner.load(selectedModel, (loaded, total) => {
+    await runner.load(model, (loaded, total) => {
       const percent = total ? Math.round((loaded / total) * 100) : 0;
-      setStatus("loading", `Loading ${selectedModel.label} model${percent ? ` · ${percent}%` : "…"}`);
+      setStatus("loading", `Loading ${model.label} model${percent ? ` · ${percent}%` : "…"}`);
     });
+    if (generation !== processingGeneration) return;
+    setModelLoading(false);
     const backendLabel = runner.backend === "webgpu" ? "WebGPU" : runner.backend === "canvas" ? "Canvas" : "WASM";
     resultBackend.textContent = backendLabel.toUpperCase();
     setStatus("ready", `${backendLabel} ready`);
-    running = true;
     await video.play();
+    if (generation !== processingGeneration) return;
+    running = true;
+    setProcessing(true);
+    scheduleNextFrame();
   } catch (error) {
+    if (generation !== processingGeneration) return;
     stopProcessing();
+    setModelLoading(false);
     setProcessing(false);
     setStatus("error", error instanceof Error ? error.message : "Could not initialize the model");
   }
@@ -236,7 +350,11 @@ function chooseModel(model: AnimeModel) {
   resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
   updateSelectedModel();
-  setStatus(videoUrl ? "ready" : "idle", videoUrl ? `${model.label} selected · ready to run` : "Drop a video to begin");
+  if (hasVideoSource() && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    void beginProcessing();
+  } else {
+    setStatus(hasVideoSource() ? "loading" : "idle", hasVideoSource() ? "Waiting for the first video frame…" : "Drop a video to begin");
+  }
 }
 
 dropZone.addEventListener("dragover", (event) => { event.preventDefault(); dropZone.classList.add("dragging"); });
@@ -252,14 +370,15 @@ exampleButton.addEventListener("click", (event) => {
   event.stopPropagation();
   loadVideo(`${import.meta.env.BASE_URL}examples/black.mp4`, "black.mp4 · example", false);
 });
+webcamButton.addEventListener("click", () => void startWebcam());
 removeButton.addEventListener("click", clearVideo);
 runButton.addEventListener("click", () => void beginProcessing());
 restartButton.addEventListener("click", () => { video.currentTime = 0; });
 video.addEventListener("loadedmetadata", () => {
-  video.className = video.videoHeight > video.videoWidth ? "portrait-input" : "landscape-input";
-  setStatus("loading", "Decoding first frame…");
+  updateVideoClasses();
+  setStatus("loading", cameraStream ? "Starting webcam…" : "Decoding first frame…");
 });
-video.addEventListener("loadeddata", () => setStatus("ready", "Video ready"));
+video.addEventListener("loadeddata", () => setStatus("ready", cameraStream ? "Webcam ready" : "Video ready"));
 video.addEventListener("play", () => {
   if (!processing) return;
   running = true;
@@ -282,8 +401,20 @@ maskInput.addEventListener("change", () => {
   maskStatus.textContent = maskInput.checked ? "MediaPipe on" : "Full frame";
   if (!processing) resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
 });
+mirrorInput.addEventListener("change", () => {
+  runner.mirrorInput = mirrorInput.checked;
+  mirrorStatus.textContent = mirrorInput.checked ? "On" : "Off";
+  updateVideoClasses();
+});
+resolutionInput.addEventListener("change", () => {
+  const size = Number(resolutionInput.value);
+  runner.inputSize = size;
+  cropGuideLabel.textContent = `FULL HEIGHT · ${size}²`;
+  if (processing) setStatus("ready", `${size}×${size} · applies on next frame`);
+});
 window.addEventListener("beforeunload", () => {
   stopProcessing();
+  releaseCamera();
   releaseVideoUrl();
   runner.dispose();
 });
