@@ -3,7 +3,7 @@ export type AnimeModel = {
   label: string;
   description: string;
   url?: string;
-  engine?: "animegan" | "palette";
+  engine?: "animegan" | "palette" | "cel" | "contour";
   colorOrder?: "rgb" | "bgr";
   stride?: 8 | 16;
 };
@@ -54,5 +54,17 @@ export const MODELS: AnimeModel[] = [
     label: "Palette 32",
     description: "Flat cel palette with selective ink",
     engine: "palette",
+  },
+  {
+    id: "cel-shader",
+    label: "Cel Shader",
+    description: "Posterized color with Sobel ink edges",
+    engine: "cel",
+  },
+  {
+    id: "contour",
+    label: "Contour",
+    description: "Filtr-style filled color bands or contour lines",
+    engine: "contour",
   },
 ];

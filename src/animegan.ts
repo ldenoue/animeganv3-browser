@@ -23,6 +23,12 @@ export class AnimeGanRunner {
   useMediaPipe = false;
   mirrorInput = false;
   inputSize = 256;
+  celLevels = 8;
+  celEdgeThreshold = 0.25;
+  celEdgeThickness = 1;
+  contourLines = false;
+  contourLevels = 3;
+  contourThickness = 0.5;
 
   private ensureWorker() {
     if (this.worker) return this.worker;
@@ -107,7 +113,20 @@ export class AnimeGanRunner {
     this.sourceContext.restore();
     const bitmap = await createImageBitmap(this.sourceCanvas);
     const background = this.backgroundColor.match(/[a-f\d]{2}/gi)?.map((channel) => Number.parseInt(channel, 16)) ?? [0, 255, 0];
-    const reply = await this.send({ type: "render", bitmap, sourceWidth: inputSize, sourceHeight: inputSize, background, useMediaPipe: this.useMediaPipe }, [bitmap]);
+    const reply = await this.send({
+      type: "render",
+      bitmap,
+      sourceWidth: inputSize,
+      sourceHeight: inputSize,
+      background,
+      useMediaPipe: this.useMediaPipe,
+      celLevels: this.celLevels,
+      celEdgeThreshold: this.celEdgeThreshold,
+      celEdgeThickness: this.celEdgeThickness,
+      contourLines: this.contourLines,
+      contourLevels: this.contourLevels,
+      contourThickness: this.contourThickness,
+    }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
 
     this.frameCanvas.width = reply.width;

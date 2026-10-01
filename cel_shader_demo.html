@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Video Abstraction (Cel Shader)</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --text-color: #e0e0e0;
+            --accent-color: #00adb5;
+            --panel-bg: #1e1e1e;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        header {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        h1 {
+            color: var(--accent-color);
+            margin-bottom: 5px;
+        }
+        p {
+            margin: 0;
+            font-size: 0.9rem;
+            opacity: 0.8;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            max-width: 1000px;
+            width: 100%;
+        }
+        .controls {
+            background-color: var(--panel-bg);
+            padding: 15px 25px;
+            border-radius: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            box-sizing: border-box;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        label {
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: var(--accent-color);
+        }
+        input[type="range"] {
+            width: 150px;
+            accent-color: var(--accent-color);
+        }
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+        }
+        .btn {
+            border: 2px solid var(--accent-color);
+            color: var(--text-color);
+            background-color: transparent;
+            padding: 8px 20px;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn:hover {
+            background-color: var(--accent-color);
+            color: #000;
+        }
+        input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+        .video-display {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            width: 100%;
+        }
+        .video-box {
+            background-color: var(--panel-bg);
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .video-box h3 {
+            margin-top: 0;
+            margin-bottom: 10px;
+            font-size: 1rem;
+            text-align: center;
+        }
+        video, canvas {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            background-color: #000;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Real-Time Cel Shader</h1>
+    <p>Inspired by Winnemöller, Olsen & Gooch (SIGGRAPH 2006)</p>
+</header>
+
+<div class="container">
+    <div class="controls">
+        <div class="file-input-wrapper">
+            <button class="btn">Upload Video</button>
+            <input type="file" id="videoUpload" accept="video/*">
+        </div>
+        
+        <div class="control-group">
+            <label for="levels">Color Quantization Levels: <span id="levelsVal">8</span></label>
+            <input type="range" id="levels" min="2" max="25" step="1" value="8">
+        </div>
+
+        <div class="control-group">
+            <label for="edgeThreshold">Edge Sensitivity: <span id="edgeVal">0.25</span></label>
+            <input type="range" id="edgeThreshold" min="0.05" max="0.8" step="0.01" value="0.25">
+        </div>
+
+        <div class="control-group">
+            <label for="edgeThickness">Edge Thickness: <span id="thicknessVal">1</span></label>
+            <input type="range" id="edgeThickness" min="1" max="3" step="1" value="1">
+        </div>
+    </div>
+
+    <div class="video-display">
+        <div class="video-box" id="sourceBox" style="display:none;">
+            <h3>Original Feed</h3>
+            <video id="inputVideo" controls loop muted playsinline crossorigin="anonymous"></video>
+        </div>
+        <div class="video-box" id="canvasBox" style="display:none;">
+            <h3>Stylized Output</h3>
+            <canvas id="outputCanvas"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    const videoUpload = document.getElementById('videoUpload');
+    const inputVideo = document.getElementById('inputVideo');
+    const canvas = document.getElementById('outputCanvas');
+    const gl = canvas.getContext('webgl2');
+
+    const sourceBox = document.getElementById('sourceBox');
+    const canvasBox = document.getElementById('canvasBox');
+
+    // Control Elements
+    const levelsSlider = document.getElementById('levels');
+    const edgeSlider = document.getElementById('edgeThreshold');
+    const thicknessSlider = document.getElementById('edgeThickness');
+    
+    const levelsVal = document.getElementById('levelsVal');
+    const edgeVal = document.getElementById('edgeVal');
+    const thicknessVal = document.getElementById('thicknessVal');
+
+    // Shader Source Code
+    const vsSource = `#version 300 es
+        in vec2 position;
+        out vec2 vTexCoord;
+        void main() {
+            vTexCoord = position * 0.5 + 0.5;
+            vTexCoord.y = 1.0 - vTexCoord.y; // Flip Y for video coordinates
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    `;
+
+    const fsSource = `#version 300 es
+        precision highp float;
+        in vec2 vTexCoord;
+        out vec4 fragColor;
+
+        uniform sampler2D uVideoTexture;
+        uniform vec2 uTexelSize;
+        
+        uniform float uLevels;
+        uniform float uEdgeThreshold;
+        uniform int uEdgeThickness;
+
+        // Convert RGB to Luminance
+        float getLuminance(vec3 color) {
+            return dot(color, vec3(0.299, 0.587, 0.114));
+        }
+
+        void main() {
+            vec4 centerColor = texture(uVideoTexture, vTexCoord);
+            
+            // --- 1. Edge Detection (Sobel Filter Approximation) ---
+            float t = float(uEdgeThickness);
+            float lx = 0.0;
+            float ly = 0.0;
+            
+            // Sobel kernels mappings
+            float n  = getLuminance(texture(uVideoTexture, vTexCoord + vec2(0.0, t) * uTexelSize).rgb);
+            float s  = getLuminance(texture(uVideoTexture, vTexCoord + vec2(0.0, -t) * uTexelSize).rgb);
+            float e  = getLuminance(texture(uVideoTexture, vTexCoord + vec2(t, 0.0) * uTexelSize).rgb);
+            float w  = getLuminance(texture(uVideoTexture, vTexCoord + vec2(-t, 0.0) * uTexelSize).rgb);
+            float ne = getLuminance(texture(uVideoTexture, vTexCoord + vec2(t, t) * uTexelSize).rgb);
+            float nw = getLuminance(texture(uVideoTexture, vTexCoord + vec2(-t, t) * uTexelSize).rgb);
+            float se = getLuminance(texture(uVideoTexture, vTexCoord + vec2(t, -t) * uTexelSize).rgb);
+            float sw = getLuminance(texture(uVideoTexture, vTexCoord + vec2(-t, -t) * uTexelSize).rgb);
+
+            lx += -1.0 * nw + 1.0 * ne - 2.0 * w + 2.0 * e - 1.0 * sw + 1.0 * se;
+            ly += -1.0 * nw - 2.0 * n - 1.0 * ne + 1.0 * sw + 2.0 * s + 1.0 * se;
+            
+            float edgeMag = sqrt(lx * lx + ly * ly);
+            float edgeFactor = edgeMag > uEdgeThreshold ? 0.0 : 1.0;
+
+            // --- 2. Color Quantization (Cel Shading) ---
+            vec3 rgb = centerColor.rgb;
+            // Convert to HSL/HSV approximation or quantify RGB directly for posterization
+            rgb = floor(rgb * uLevels) / uLevels;
+
+            // --- 3. Combine Outlines and Quantized Colors ---
+            fragColor = vec4(rgb * edgeFactor, centerColor.a);
+        }
+    `;
+
+    if (!gl) {
+        alert('WebGL 2 not supported by your browser.');
+    }
+
+    // Helper functions for WebGL compiling
+    function createShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.error(gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
+            return null;
+        }
+        return shader;
+    }
+
+    const vertexShader = createShader(gl, gl.VERTEX_SHADER, vsSource);
+    const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program));
+    }
+
+    // Lookup uniforms and attributes
+    const positionAttributeLocation = gl.getAttribLocation(program, "position");
+    const videoTextureLocation = gl.getUniformLocation(program, "uVideoTexture");
+    const texelSizeLocation = gl.getUniformLocation(program, "uTexelSize");
+    const levelsLocation = gl.getUniformLocation(program, "uLevels");
+    const edgeThresholdLocation = gl.getUniformLocation(program, "uEdgeThreshold");
+    const edgeThicknessLocation = gl.getUniformLocation(program, "uEdgeThickness");
+
+    // Setup geometry (Fullscreen Quad)
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,   1, -1,  -1,  1,
+        -1,  1,   1, -1,   1,  1,
+    ]), gl.STATIC_DRAW);
+
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.enableVertexAttribArray(positionAttributeLocation);
+    gl.vertexAttribPointer(positionAttributeLocation, 2, gl.FLOAT, false, 0, 0);
+
+    // Setup Texture
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    // Handle File Upload
+    videoUpload.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            const url = URL.createObjectURL(file);
+            inputVideo.src = url;
+            
+            sourceBox.style.display = 'flex';
+            canvasBox.style.display = 'flex';
+            
+            inputVideo.play();
+        }
+    });
+
+    // Handle updates when metadata loaded
+    inputVideo.addEventListener('loadedmetadata', () => {
+        canvas.width = inputVideo.videoWidth;
+        canvas.height = inputVideo.videoHeight;
+        gl.viewport(0, 0, canvas.width, canvas.height);
+    });
+
+    // Dynamic UI Updates
+    levelsSlider.addEventListener('input', (e) => levelsVal.textContent = e.target.value);
+    edgeSlider.addEventListener('input', (e) => edgeVal.textContent = e.target.value);
+    thicknessSlider.addEventListener('input', (e) => thicknessVal.textContent = e.target.value);
+
+    // Render loop
+    function render() {
+        if (inputVideo.readyState >= inputVideo.HAVE_CURRENT_DATA) {
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            gl.useProgram(program);
+            gl.bindVertexArray(vao);
+
+            // Upload current video frame to texture
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, inputVideo);
+
+            // Uniform bindings
+            gl.uniform1i(videoTextureLocation, 0);
+            gl.uniform2f(texelSizeLocation, 1.0 / canvas.width, 1.0 / canvas.height);
+            gl.uniform1f(levelsLocation, parseFloat(levelsSlider.value));
+            gl.uniform1f(edgeThresholdLocation, parseFloat(edgeSlider.value));
+            gl.uniform1i(edgeThicknessLocation, parseInt(thicknessSlider.value));
+
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+        requestAnimationFrame(render);
+    }
+
+    requestAnimationFrame(render);
+</script>
+</body>
+</html>

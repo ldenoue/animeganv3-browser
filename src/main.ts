@@ -92,6 +92,18 @@ root.innerHTML = `
           <span><strong>MIRROR INPUT</strong><small>Off</small></span>
         </label>
       </section>
+      <section class="effect-controls cel-controls" hidden>
+        <span class="step">CEL</span>
+        <label><span>COLOR LEVELS <output>8</output></span><input class="cel-levels" type="range" min="2" max="25" step="1" value="8" aria-label="Cel shader color levels"></label>
+        <label><span>EDGE SENSITIVITY <output>0.25</output></span><input class="cel-edge-threshold" type="range" min="0.05" max="0.8" step="0.01" value="0.25" aria-label="Cel shader edge sensitivity"></label>
+        <label><span>EDGE THICKNESS <output>1</output></span><input class="cel-edge-thickness" type="range" min="1" max="3" step="1" value="1" aria-label="Cel shader edge thickness"></label>
+      </section>
+      <section class="effect-controls contour-controls" hidden>
+        <span class="step">CONTOUR</span>
+        <label><span>FILL MODE</span><select class="contour-fill-mode" aria-label="Contour fill mode"><option value="filled">Filled</option><option value="lines">Lines</option></select></label>
+        <label><span>LEVELS <output>3</output></span><input class="contour-levels" type="range" min="2" max="12" step="1" value="3" aria-label="Contour levels"></label>
+        <label><span>THICKNESS <output>0.50</output></span><input class="contour-thickness" type="range" min="0.25" max="4" step="0.25" value="0.5" aria-label="Contour thickness"></label>
+      </section>
     </main>
     <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
   </div>`;
@@ -126,6 +138,14 @@ const maskInput = find<HTMLInputElement>(".segmentation-toggle input");
 const maskStatus = find<HTMLElement>(".segmentation-toggle small");
 const mirrorInput = find<HTMLInputElement>(".mirror-toggle input");
 const mirrorStatus = find<HTMLElement>(".mirror-toggle small");
+const celControls = find<HTMLElement>(".cel-controls");
+const celLevelsInput = find<HTMLInputElement>(".cel-levels");
+const celEdgeThresholdInput = find<HTMLInputElement>(".cel-edge-threshold");
+const celEdgeThicknessInput = find<HTMLInputElement>(".cel-edge-thickness");
+const contourControls = find<HTMLElement>(".contour-controls");
+const contourFillModeInput = find<HTMLSelectElement>(".contour-fill-mode");
+const contourLevelsInput = find<HTMLInputElement>(".contour-levels");
+const contourThicknessInput = find<HTMLInputElement>(".contour-thickness");
 
 const runner = new AnimeGanRunner();
 let selectedModel = MODELS[0];
@@ -167,6 +187,8 @@ function updateSelectedModel() {
     button.setAttribute("aria-pressed", String(active));
   }
   resultModel.textContent = selectedModel.label.toUpperCase();
+  celControls.hidden = selectedModel.engine !== "cel";
+  contourControls.hidden = selectedModel.engine !== "contour";
 }
 
 function stopProcessing() {
@@ -412,6 +434,21 @@ resolutionInput.addEventListener("change", () => {
   cropGuideLabel.textContent = `FULL HEIGHT · ${size}²`;
   if (processing) setStatus("ready", `${size}×${size} · applies on next frame`);
 });
+function bindCelControl(input: HTMLInputElement, update: (value: number) => void) {
+  input.addEventListener("input", () => {
+    const value = Number(input.value);
+    update(value);
+    input.parentElement?.querySelector("output")?.replaceChildren(input.value);
+  });
+}
+bindCelControl(celLevelsInput, (value) => { runner.celLevels = value; });
+bindCelControl(celEdgeThresholdInput, (value) => { runner.celEdgeThreshold = value; });
+bindCelControl(celEdgeThicknessInput, (value) => { runner.celEdgeThickness = value; });
+contourFillModeInput.addEventListener("change", () => {
+  runner.contourLines = contourFillModeInput.value === "lines";
+});
+bindCelControl(contourLevelsInput, (value) => { runner.contourLevels = value; });
+bindCelControl(contourThicknessInput, (value) => { runner.contourThickness = value; });
 window.addEventListener("beforeunload", () => {
   stopProcessing();
   releaseCamera();

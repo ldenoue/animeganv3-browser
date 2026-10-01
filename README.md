@@ -29,6 +29,10 @@ Models are configured in `src/models.ts`. The app includes the White-box Cartoon
 
 `Palette 32` is a model-free custom filter: it lightly blurs and reduces the source to 32×32, extracts a twelve-color palette, smoothly upscales and re-snaps it into flat cel-shaded regions, then clips the result with MediaPipe over the selected background color. Only long, high-confidence internal edges are retained as simplified ink paths; the MediaPipe silhouette is traced separately.
 
+`Cel Shader` is a model-free real-time effect adapted from `cel_shader_demo.html`. It posterizes RGB color and overlays luminance-based Sobel edges, with live controls for color levels, edge sensitivity, and edge thickness. It follows the same crop, mirror, resolution, and optional MediaPipe pipeline as the learned models.
+
+`Contour` is a CPU port of [Filtr's](https://github.com/eurobuddha/filtr) MIT-licensed Contour shader. It defaults to the Filled, 3-level, 0.50-thickness look and also supports the original lines-only mode. See `THIRD_PARTY_NOTICES.md` for attribution.
+
 Turn off **Person mask** to skip MediaPipe processing and stylize the complete framed image. The background color and silhouette outline are then omitted.
 
 AnimeGANv3 and White-box Cartoonization are distributed under their upstream projects' non-commercial licenses. Review the [AnimeGANv3 license](https://github.com/TachibanaYoshino/AnimeGANv3#-license) and [White-box Cartoonization license](https://github.com/SystemErrorWang/White-box-Cartoonization#license) before use.

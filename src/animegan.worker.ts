@@ -10,15 +10,29 @@ type LoadMessage = {
   requestId: number;
   url?: string;
   stride: 8 | 16;
-  engine: "animegan" | "palette";
+  engine: "animegan" | "palette" | "cel" | "contour";
   colorOrder: "rgb" | "bgr";
 };
-type RenderMessage = { type: "render"; requestId: number; bitmap: ImageBitmap; sourceWidth: number; sourceHeight: number; background: number[]; useMediaPipe: boolean };
+type RenderMessage = {
+  type: "render";
+  requestId: number;
+  bitmap: ImageBitmap;
+  sourceWidth: number;
+  sourceHeight: number;
+  background: number[];
+  useMediaPipe: boolean;
+  celLevels: number;
+  celEdgeThreshold: number;
+  celEdgeThickness: number;
+  contourLines: boolean;
+  contourLevels: number;
+  contourThickness: number;
+};
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
-let currentEngine: "animegan" | "palette" = "animegan";
+let currentEngine: "animegan" | "palette" | "cel" | "contour" = "animegan";
 let modelColorOrder: "rgb" | "bgr" = "rgb";
 let modelStride: 8 | 16 = 8;
 const canvas = new OffscreenCanvas(1, 1);
@@ -51,7 +65,7 @@ async function loadModel({ requestId, url, stride, engine, colorOrder }: LoadMes
   session = undefined;
   currentEngine = engine;
   modelColorOrder = colorOrder;
-  if (engine === "palette") {
+  if (engine !== "animegan") {
     backend = "canvas";
     send({ type: "loaded", requestId, backend });
     return;
@@ -226,6 +240,130 @@ function paletteFrame(original: ImageData, alpha: Uint8ClampedArray, backgroundC
   return smoothContext.getImageData(0, 0, width, height).data;
 }
 
+function celShaderFrame(
+  original: ImageData,
+  alpha: Uint8ClampedArray,
+  backgroundColor: number[],
+  levels: number,
+  edgeThreshold: number,
+  edgeThickness: number,
+) {
+  const { width, height } = original;
+  const composited = new Uint8ClampedArray(original.data.length);
+  const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
+  for (let pixel = 0; pixel < composited.length; pixel += 4) {
+    const mix = alpha[pixel] / 255;
+    composited[pixel] = original.data[pixel] * mix + backgroundRed * (1 - mix);
+    composited[pixel + 1] = original.data[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    composited[pixel + 2] = original.data[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    composited[pixel + 3] = 255;
+  }
+
+  const luminance = (x: number, y: number) => {
+    const clampedX = Math.max(0, Math.min(width - 1, x));
+    const clampedY = Math.max(0, Math.min(height - 1, y));
+    const pixel = (clampedY * width + clampedX) * 4;
+    return (composited[pixel] * 0.299 + composited[pixel + 1] * 0.587 + composited[pixel + 2] * 0.114) / 255;
+  };
+  const output = new Uint8ClampedArray(composited.length);
+  const thickness = Math.max(1, Math.round(edgeThickness));
+  const quantizationLevels = Math.max(2, Math.round(levels));
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const north = luminance(x, y + thickness);
+      const south = luminance(x, y - thickness);
+      const east = luminance(x + thickness, y);
+      const west = luminance(x - thickness, y);
+      const northEast = luminance(x + thickness, y + thickness);
+      const northWest = luminance(x - thickness, y + thickness);
+      const southEast = luminance(x + thickness, y - thickness);
+      const southWest = luminance(x - thickness, y - thickness);
+      const gradientX = -northWest + northEast - 2 * west + 2 * east - southWest + southEast;
+      const gradientY = -northWest - 2 * north - northEast + southWest + 2 * south + southEast;
+      const edgeFactor = Math.hypot(gradientX, gradientY) > edgeThreshold ? 0 : 1;
+      const pixel = (y * width + x) * 4;
+      for (let channel = 0; channel < 3; channel += 1) {
+        const normalized = composited[pixel + channel] / 255;
+        output[pixel + channel] = Math.floor(normalized * quantizationLevels) / quantizationLevels * 255 * edgeFactor;
+      }
+      output[pixel + 3] = 255;
+    }
+  }
+  return output;
+}
+
+// CPU port of filtr's MIT-licensed Contour fragment shader.
+// Source: https://github.com/eurobuddha/filtr/blob/main/src/engine/shaders/effects.ts
+function contourFrame(
+  original: ImageData,
+  alpha: Uint8ClampedArray,
+  backgroundColor: number[],
+  linesOnly: boolean,
+  levels: number,
+  thickness: number,
+) {
+  const { width, height } = original;
+  const composited = new Uint8ClampedArray(original.data.length);
+  const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
+  for (let pixel = 0; pixel < composited.length; pixel += 4) {
+    const mix = alpha[pixel] / 255;
+    composited[pixel] = original.data[pixel] * mix + backgroundRed * (1 - mix);
+    composited[pixel + 1] = original.data[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    composited[pixel + 2] = original.data[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    composited[pixel + 3] = 255;
+  }
+
+  const sampleChannel = (x: number, y: number, channel: number) => {
+    const clampedX = Math.max(0, Math.min(width - 1, x));
+    const clampedY = Math.max(0, Math.min(height - 1, y));
+    const x0 = Math.floor(clampedX);
+    const y0 = Math.floor(clampedY);
+    const x1 = Math.min(width - 1, x0 + 1);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const fx = clampedX - x0;
+    const fy = clampedY - y0;
+    const topLeft = composited[(y0 * width + x0) * 4 + channel];
+    const topRight = composited[(y0 * width + x1) * 4 + channel];
+    const bottomLeft = composited[(y1 * width + x0) * 4 + channel];
+    const bottomRight = composited[(y1 * width + x1) * 4 + channel];
+    const top = topLeft + (topRight - topLeft) * fx;
+    const bottom = bottomLeft + (bottomRight - bottomLeft) * fx;
+    return top + (bottom - top) * fy;
+  };
+  const quantizationLevels = Math.max(2, Math.round(levels));
+  const band = (x: number, y: number) => {
+    const red = sampleChannel(x, y, 0);
+    const green = sampleChannel(x, y, 1);
+    const blue = sampleChannel(x, y, 2);
+    const luminance = Math.min(0.999, (red * 0.299 + green * 0.587 + blue * 0.114) / 255);
+    return Math.floor(luminance * quantizationLevels);
+  };
+
+  const output = new Uint8ClampedArray(composited.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = (y * width + x) * 4;
+      if (linesOnly) {
+        const centerBand = band(x, y);
+        const edge = Math.abs(band(x + thickness, y) - centerBand)
+          + Math.abs(band(x, y + thickness) - centerBand);
+        const isLine = edge >= 0.5;
+        output[pixel] = isLine ? 0 : composited[pixel];
+        output[pixel + 1] = isLine ? 0 : composited[pixel + 1];
+        output[pixel + 2] = isLine ? 0 : composited[pixel + 2];
+      } else {
+        const denominator = Math.max(quantizationLevels - 1, 1);
+        for (let channel = 0; channel < 3; channel += 1) {
+          const normalized = composited[pixel + channel] / 255;
+          output[pixel + channel] = Math.min(255, Math.floor(normalized * quantizationLevels) / denominator * 255);
+        }
+      }
+      output[pixel + 3] = 255;
+    }
+  }
+  return output;
+}
+
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
   const width = message.sourceWidth;
@@ -287,6 +425,30 @@ async function renderFrame(message: RenderMessage) {
   const [backgroundRed, backgroundGreen, backgroundBlue] = message.background;
   if (currentEngine === "palette") {
     const pixels = paletteFrame(original, alpha, message.background, message.useMediaPipe);
+    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    return;
+  }
+  if (currentEngine === "cel") {
+    const pixels = celShaderFrame(
+      original,
+      alpha,
+      message.background,
+      message.celLevels,
+      message.celEdgeThreshold,
+      message.celEdgeThickness,
+    );
+    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    return;
+  }
+  if (currentEngine === "contour") {
+    const pixels = contourFrame(
+      original,
+      alpha,
+      message.background,
+      message.contourLines,
+      message.contourLevels,
+      message.contourThickness,
+    );
     send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
     return;
   }
