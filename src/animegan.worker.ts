@@ -10,7 +10,7 @@ type LoadMessage = {
   requestId: number;
   url?: string;
   stride: 8 | 16;
-  engine: "animegan" | "palette" | "cel" | "contour";
+  engine: "animegan" | "palette" | "cel" | "contour" | "lowpoly";
   colorOrder: "rgb" | "bgr";
 };
 type RenderMessage = {
@@ -27,18 +27,23 @@ type RenderMessage = {
   contourLines: boolean;
   contourLevels: number;
   contourThickness: number;
+  lowPolyDetail: number;
+  lowPolyEdgeGuidance: number;
+  lowPolyJitter: number;
 };
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
-let currentEngine: "animegan" | "palette" | "cel" | "contour" = "animegan";
+let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" = "animegan";
 let modelColorOrder: "rgb" | "bgr" = "rgb";
 let modelStride: 8 | 16 = 8;
 const canvas = new OffscreenCanvas(1, 1);
 const context = canvas.getContext("2d", { willReadFrequently: true })!;
 const maskCanvas = new OffscreenCanvas(1, 1);
 const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true })!;
+const lowPolyCanvas = new OffscreenCanvas(1, 1);
+const lowPolyContext = lowPolyCanvas.getContext("2d", { willReadFrequently: true })!;
 
 function send(message: object, transfer: Transferable[] = []) {
   self.postMessage(message, { transfer });
@@ -364,6 +369,184 @@ function contourFrame(
   return output;
 }
 
+type MeshPoint = { x: number; y: number };
+type MeshTriangle = { a: number; b: number; c: number; circleX: number; circleY: number; radiusSquared: number };
+
+function makeMeshTriangle(points: MeshPoint[], a: number, b: number, c: number): MeshTriangle | undefined {
+  const first = points[a];
+  const second = points[b];
+  const third = points[c];
+  const divisor = 2 * (
+    first.x * (second.y - third.y)
+    + second.x * (third.y - first.y)
+    + third.x * (first.y - second.y)
+  );
+  if (Math.abs(divisor) < 1e-6) return undefined;
+  const firstLength = first.x * first.x + first.y * first.y;
+  const secondLength = second.x * second.x + second.y * second.y;
+  const thirdLength = third.x * third.x + third.y * third.y;
+  const circleX = (
+    firstLength * (second.y - third.y)
+    + secondLength * (third.y - first.y)
+    + thirdLength * (first.y - second.y)
+  ) / divisor;
+  const circleY = (
+    firstLength * (third.x - second.x)
+    + secondLength * (first.x - third.x)
+    + thirdLength * (second.x - first.x)
+  ) / divisor;
+  const deltaX = first.x - circleX;
+  const deltaY = first.y - circleY;
+  return { a, b, c, circleX, circleY, radiusSquared: deltaX * deltaX + deltaY * deltaY };
+}
+
+function triangulate(points: MeshPoint[], width: number, height: number) {
+  const pointCount = points.length;
+  const extent = Math.max(width, height);
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const meshPoints = [
+    ...points,
+    { x: centerX - extent * 20, y: centerY - extent },
+    { x: centerX, y: centerY + extent * 20 },
+    { x: centerX + extent * 20, y: centerY - extent },
+  ];
+  const superTriangle = makeMeshTriangle(meshPoints, pointCount, pointCount + 1, pointCount + 2);
+  let triangles = superTriangle ? [superTriangle] : [];
+
+  for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+    const point = meshPoints[pointIndex];
+    const badTriangles = triangles.filter((triangle) => {
+      const deltaX = point.x - triangle.circleX;
+      const deltaY = point.y - triangle.circleY;
+      return deltaX * deltaX + deltaY * deltaY <= triangle.radiusSquared + 1e-5;
+    });
+    const badSet = new Set(badTriangles);
+    const edges = new Map<string, { first: number; second: number; count: number }>();
+    for (const triangle of badTriangles) {
+      for (const [first, second] of [[triangle.a, triangle.b], [triangle.b, triangle.c], [triangle.c, triangle.a]]) {
+        const key = first < second ? `${first}:${second}` : `${second}:${first}`;
+        const existing = edges.get(key);
+        if (existing) existing.count += 1;
+        else edges.set(key, { first, second, count: 1 });
+      }
+    }
+    triangles = triangles.filter((triangle) => !badSet.has(triangle));
+    for (const edge of edges.values()) {
+      if (edge.count !== 1) continue;
+      const triangle = makeMeshTriangle(meshPoints, edge.first, edge.second, pointIndex);
+      if (triangle) triangles.push(triangle);
+    }
+  }
+  return triangles.filter(({ a, b, c }) => a < pointCount && b < pointCount && c < pointCount);
+}
+
+function lowPolyFrame(
+  original: ImageData,
+  alpha: Uint8ClampedArray,
+  backgroundColor: number[],
+  detail: number,
+  edgeGuidance: number,
+  jitter: number,
+) {
+  const { width, height } = original;
+  const composited = new Uint8ClampedArray(original.data.length);
+  const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
+  for (let pixel = 0; pixel < composited.length; pixel += 4) {
+    const mix = alpha[pixel] / 255;
+    composited[pixel] = original.data[pixel] * mix + backgroundRed * (1 - mix);
+    composited[pixel + 1] = original.data[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    composited[pixel + 2] = original.data[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    composited[pixel + 3] = 255;
+  }
+
+  const sampleLuminance = (x: number, y: number) => {
+    const sampleX = Math.max(0, Math.min(width - 1, Math.round(x)));
+    const sampleY = Math.max(0, Math.min(height - 1, Math.round(y)));
+    const pixel = (sampleY * width + sampleX) * 4;
+    return (composited[pixel] * 0.299 + composited[pixel + 1] * 0.587 + composited[pixel + 2] * 0.114) / 255;
+  };
+  const divisions = Math.max(6, Math.min(32, Math.round(detail)));
+  const cellWidth = width / divisions;
+  const cellHeight = height / divisions;
+  const gradientStep = Math.max(1, Math.min(cellWidth, cellHeight) * 0.12);
+  const gradientAt = (x: number, y: number) => Math.hypot(
+    sampleLuminance(x + gradientStep, y) - sampleLuminance(x - gradientStep, y),
+    sampleLuminance(x, y + gradientStep) - sampleLuminance(x, y - gradientStep),
+  );
+  const hash = (x: number, y: number, seed: number) => {
+    const value = Math.sin(x * 12.9898 + y * 78.233 + seed * 37.719) * 43758.5453;
+    return value - Math.floor(value);
+  };
+
+  const points: MeshPoint[] = [];
+  for (let row = 0; row <= divisions; row += 1) {
+    for (let column = 0; column <= divisions; column += 1) {
+      const boundary = row === 0 || column === 0 || row === divisions || column === divisions;
+      const baseX = column / divisions * width;
+      const baseY = row / divisions * height;
+      if (boundary) {
+        points.push({ x: baseX, y: baseY });
+        continue;
+      }
+      const jitterX = (hash(column, row, 1) - 0.5) * cellWidth * jitter;
+      const jitterY = (hash(column, row, 2) - 0.5) * cellHeight * jitter;
+      let pointX = baseX + jitterX;
+      let pointY = baseY + jitterY;
+      if (edgeGuidance > 0) {
+        let strongestX = pointX;
+        let strongestY = pointY;
+        let strongestGradient = 0;
+        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            const candidateX = pointX + offsetX * cellWidth * 0.3;
+            const candidateY = pointY + offsetY * cellHeight * 0.3;
+            const strength = gradientAt(candidateX, candidateY);
+            if (strength > strongestGradient) {
+              strongestGradient = strength;
+              strongestX = candidateX;
+              strongestY = candidateY;
+            }
+          }
+        }
+        const attraction = Math.min(1, strongestGradient * 3) * edgeGuidance;
+        pointX += (strongestX - pointX) * attraction;
+        pointY += (strongestY - pointY) * attraction;
+      }
+      points.push({
+        x: Math.max(baseX - cellWidth * 0.46, Math.min(baseX + cellWidth * 0.46, pointX)),
+        y: Math.max(baseY - cellHeight * 0.46, Math.min(baseY + cellHeight * 0.46, pointY)),
+      });
+    }
+  }
+
+  const triangles = triangulate(points, width, height);
+  lowPolyCanvas.width = width;
+  lowPolyCanvas.height = height;
+  lowPolyContext.clearRect(0, 0, width, height);
+  lowPolyContext.lineJoin = "bevel";
+  lowPolyContext.lineWidth = 0.8;
+  for (const triangle of triangles) {
+    const first = points[triangle.a];
+    const second = points[triangle.b];
+    const third = points[triangle.c];
+    const centerX = Math.max(0, Math.min(width - 1, Math.round((first.x + second.x + third.x) / 3)));
+    const centerY = Math.max(0, Math.min(height - 1, Math.round((first.y + second.y + third.y) / 3)));
+    const centerPixel = (centerY * width + centerX) * 4;
+    const color = `rgb(${composited[centerPixel]} ${composited[centerPixel + 1]} ${composited[centerPixel + 2]})`;
+    lowPolyContext.fillStyle = color;
+    lowPolyContext.strokeStyle = color;
+    lowPolyContext.beginPath();
+    lowPolyContext.moveTo(first.x, first.y);
+    lowPolyContext.lineTo(second.x, second.y);
+    lowPolyContext.lineTo(third.x, third.y);
+    lowPolyContext.closePath();
+    lowPolyContext.fill();
+    lowPolyContext.stroke();
+  }
+  return lowPolyContext.getImageData(0, 0, width, height).data;
+}
+
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
   const width = message.sourceWidth;
@@ -448,6 +631,18 @@ async function renderFrame(message: RenderMessage) {
       message.contourLines,
       message.contourLevels,
       message.contourThickness,
+    );
+    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    return;
+  }
+  if (currentEngine === "lowpoly") {
+    const pixels = lowPolyFrame(
+      original,
+      alpha,
+      message.background,
+      message.lowPolyDetail,
+      message.lowPolyEdgeGuidance,
+      message.lowPolyJitter,
     );
     send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
     return;

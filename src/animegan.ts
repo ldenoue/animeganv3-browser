@@ -29,6 +29,9 @@ export class AnimeGanRunner {
   contourLines = false;
   contourLevels = 3;
   contourThickness = 0.5;
+  lowPolyDetail = 18;
+  lowPolyEdgeGuidance = 0.65;
+  lowPolyJitter = 0.35;
 
   private ensureWorker() {
     if (this.worker) return this.worker;
@@ -126,6 +129,9 @@ export class AnimeGanRunner {
       contourLines: this.contourLines,
       contourLevels: this.contourLevels,
       contourThickness: this.contourThickness,
+      lowPolyDetail: this.lowPolyDetail,
+      lowPolyEdgeGuidance: this.lowPolyEdgeGuidance,
+      lowPolyJitter: this.lowPolyJitter,
     }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
 

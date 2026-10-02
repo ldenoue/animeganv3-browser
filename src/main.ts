@@ -104,6 +104,12 @@ root.innerHTML = `
         <label><span>LEVELS <output>3</output></span><input class="contour-levels" type="range" min="2" max="12" step="1" value="3" aria-label="Contour levels"></label>
         <label><span>THICKNESS <output>0.50</output></span><input class="contour-thickness" type="range" min="0.25" max="4" step="0.25" value="0.5" aria-label="Contour thickness"></label>
       </section>
+      <section class="effect-controls low-poly-controls" hidden>
+        <span class="step">LOW POLY</span>
+        <label><span>DETAIL <output>18</output></span><input class="low-poly-detail" type="range" min="6" max="32" step="1" value="18" aria-label="Low Poly detail"></label>
+        <label><span>EDGE GUIDE <output>65%</output></span><input class="low-poly-edge" type="range" min="0" max="100" step="5" value="65" aria-label="Low Poly edge guidance"></label>
+        <label><span>IRREGULARITY <output>35%</output></span><input class="low-poly-jitter" type="range" min="0" max="80" step="5" value="35" aria-label="Low Poly irregularity"></label>
+      </section>
     </main>
     <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
   </div>`;
@@ -146,6 +152,10 @@ const contourControls = find<HTMLElement>(".contour-controls");
 const contourFillModeInput = find<HTMLSelectElement>(".contour-fill-mode");
 const contourLevelsInput = find<HTMLInputElement>(".contour-levels");
 const contourThicknessInput = find<HTMLInputElement>(".contour-thickness");
+const lowPolyControls = find<HTMLElement>(".low-poly-controls");
+const lowPolyDetailInput = find<HTMLInputElement>(".low-poly-detail");
+const lowPolyEdgeInput = find<HTMLInputElement>(".low-poly-edge");
+const lowPolyJitterInput = find<HTMLInputElement>(".low-poly-jitter");
 
 const runner = new AnimeGanRunner();
 let selectedModel = MODELS[0];
@@ -189,6 +199,7 @@ function updateSelectedModel() {
   resultModel.textContent = selectedModel.label.toUpperCase();
   celControls.hidden = selectedModel.engine !== "cel";
   contourControls.hidden = selectedModel.engine !== "contour";
+  lowPolyControls.hidden = selectedModel.engine !== "lowpoly";
 }
 
 function stopProcessing() {
@@ -434,21 +445,24 @@ resolutionInput.addEventListener("change", () => {
   cropGuideLabel.textContent = `FULL HEIGHT · ${size}²`;
   if (processing) setStatus("ready", `${size}×${size} · applies on next frame`);
 });
-function bindCelControl(input: HTMLInputElement, update: (value: number) => void) {
+function bindRangeControl(input: HTMLInputElement, update: (value: number) => void, format = (value: string) => value) {
   input.addEventListener("input", () => {
     const value = Number(input.value);
     update(value);
-    input.parentElement?.querySelector("output")?.replaceChildren(input.value);
+    input.parentElement?.querySelector("output")?.replaceChildren(format(input.value));
   });
 }
-bindCelControl(celLevelsInput, (value) => { runner.celLevels = value; });
-bindCelControl(celEdgeThresholdInput, (value) => { runner.celEdgeThreshold = value; });
-bindCelControl(celEdgeThicknessInput, (value) => { runner.celEdgeThickness = value; });
+bindRangeControl(celLevelsInput, (value) => { runner.celLevels = value; });
+bindRangeControl(celEdgeThresholdInput, (value) => { runner.celEdgeThreshold = value; });
+bindRangeControl(celEdgeThicknessInput, (value) => { runner.celEdgeThickness = value; });
 contourFillModeInput.addEventListener("change", () => {
   runner.contourLines = contourFillModeInput.value === "lines";
 });
-bindCelControl(contourLevelsInput, (value) => { runner.contourLevels = value; });
-bindCelControl(contourThicknessInput, (value) => { runner.contourThickness = value; });
+bindRangeControl(contourLevelsInput, (value) => { runner.contourLevels = value; });
+bindRangeControl(contourThicknessInput, (value) => { runner.contourThickness = value; });
+bindRangeControl(lowPolyDetailInput, (value) => { runner.lowPolyDetail = value; });
+bindRangeControl(lowPolyEdgeInput, (value) => { runner.lowPolyEdgeGuidance = value / 100; }, (value) => `${value}%`);
+bindRangeControl(lowPolyJitterInput, (value) => { runner.lowPolyJitter = value / 100; }, (value) => `${value}%`);
 window.addEventListener("beforeunload", () => {
   stopProcessing();
   releaseCamera();

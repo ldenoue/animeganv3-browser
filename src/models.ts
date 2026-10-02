@@ -3,7 +3,7 @@ export type AnimeModel = {
   label: string;
   description: string;
   url?: string;
-  engine?: "animegan" | "palette" | "cel" | "contour";
+  engine?: "animegan" | "palette" | "cel" | "contour" | "lowpoly";
   colorOrder?: "rgb" | "bgr";
   stride?: 8 | 16;
 };
@@ -66,5 +66,11 @@ export const MODELS: AnimeModel[] = [
     label: "Contour",
     description: "Filtr-style filled color bands or contour lines",
     engine: "contour",
+  },
+  {
+    id: "low-poly",
+    label: "Low Poly",
+    description: "Edge-guided Delaunay color facets",
+    engine: "lowpoly",
   },
 ];

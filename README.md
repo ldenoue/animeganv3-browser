@@ -33,6 +33,8 @@ Models are configured in `src/models.ts`. The app includes the White-box Cartoon
 
 `Contour` is a CPU port of [Filtr's](https://github.com/eurobuddha/filtr) MIT-licensed Contour shader. It defaults to the Filled, 3-level, 0.50-thickness look and also supports the original lines-only mode. See `THIRD_PARTY_NOTICES.md` for attribution.
 
+`Low Poly` builds an edge-guided Delaunay mesh for every frame and fills each triangle with the source color sampled at its centroid. Detail controls mesh density, Edge guide attracts points toward strong luminance gradients, and Irregularity adds deterministic jitter so the facets look organic instead of grid-like.
+
 Turn off **Person mask** to skip MediaPipe processing and stylize the complete framed image. The background color and silhouette outline are then omitted.
 
 AnimeGANv3 and White-box Cartoonization are distributed under their upstream projects' non-commercial licenses. Review the [AnimeGANv3 license](https://github.com/TachibanaYoshino/AnimeGANv3#-license) and [White-box Cartoonization license](https://github.com/SystemErrorWang/White-box-Cartoonization#license) before use.
