@@ -3,7 +3,7 @@ export type AnimeModel = {
   label: string;
   description: string;
   url?: string;
-  engine?: "animegan" | "palette" | "cel" | "contour" | "lowpoly";
+  engine?: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin";
   colorOrder?: "rgb" | "bgr";
   stride?: 8 | 16;
 };
@@ -72,5 +72,11 @@ export const MODELS: AnimeModel[] = [
     label: "Low Poly",
     description: "Edge-guided Delaunay color facets",
     engine: "lowpoly",
+  },
+  {
+    id: "ervin",
+    label: "Ervin",
+    description: "Laplacian feature-point Delaunay mesh",
+    engine: "ervin",
   },
 ];

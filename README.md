@@ -35,6 +35,8 @@ Models are configured in `src/models.ts`. The app includes the White-box Cartoon
 
 `Low Poly` builds an edge-guided Delaunay mesh for every frame and fills each triangle with the source color sampled at its centroid. Detail controls mesh density, Edge guide attracts points toward strong luminance gradients, and Irregularity adds deterministic jitter so the facets look organic instead of grid-like.
 
+`Ervin` adapts Ervin Szilagyi's [Delaunay image pipeline](https://ervinszilagyi.dev/articles/generate-low-poly-images-using-del-triangulation.html) for real-time browser video. It blurs the composited frame, computes a grayscale Laplacian edge map, thresholds and caps the resulting feature points, triangulates them with [Delaunator](https://github.com/mapbox/delaunator), and fills every facet from its centroid color. The point budget scales with output area so facets retain a similar apparent size across resolutions.
+
 Turn off **Person mask** to skip MediaPipe processing and stylize the complete framed image. The background color and silhouette outline are then omitted.
 
 AnimeGANv3 and White-box Cartoonization are distributed under their upstream projects' non-commercial licenses. Review the [AnimeGANv3 license](https://github.com/TachibanaYoshino/AnimeGANv3#-license) and [White-box Cartoonization license](https://github.com/SystemErrorWang/White-box-Cartoonization#license) before use.

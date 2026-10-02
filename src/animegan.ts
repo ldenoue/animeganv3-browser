@@ -32,6 +32,9 @@ export class AnimeGanRunner {
   lowPolyDetail = 18;
   lowPolyEdgeGuidance = 0.65;
   lowPolyJitter = 0.35;
+  ervinPoints = 1200;
+  ervinThreshold = 0.05;
+  ervinBlur = 1;
 
   private ensureWorker() {
     if (this.worker) return this.worker;
@@ -132,6 +135,9 @@ export class AnimeGanRunner {
       lowPolyDetail: this.lowPolyDetail,
       lowPolyEdgeGuidance: this.lowPolyEdgeGuidance,
       lowPolyJitter: this.lowPolyJitter,
+      ervinPoints: this.ervinPoints,
+      ervinThreshold: this.ervinThreshold,
+      ervinBlur: this.ervinBlur,
     }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
 

@@ -110,6 +110,12 @@ root.innerHTML = `
         <label><span>EDGE GUIDE <output>65%</output></span><input class="low-poly-edge" type="range" min="0" max="100" step="5" value="65" aria-label="Low Poly edge guidance"></label>
         <label><span>IRREGULARITY <output>35%</output></span><input class="low-poly-jitter" type="range" min="0" max="80" step="5" value="35" aria-label="Low Poly irregularity"></label>
       </section>
+      <section class="effect-controls ervin-controls" hidden>
+        <span class="step">ERVIN</span>
+        <label><span>POINTS @256 <output>1200</output></span><input class="ervin-points" type="range" min="200" max="1600" step="100" value="1200" aria-label="Ervin feature points at 256 resolution"></label>
+        <label><span>EDGE THRESHOLD <output>5%</output></span><input class="ervin-threshold" type="range" min="2" max="60" step="1" value="5" aria-label="Ervin edge threshold"></label>
+        <label><span>BLUR <output>1.0</output></span><input class="ervin-blur" type="range" min="0" max="6" step="0.5" value="1" aria-label="Ervin blur radius"></label>
+      </section>
     </main>
     <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
   </div>`;
@@ -156,6 +162,10 @@ const lowPolyControls = find<HTMLElement>(".low-poly-controls");
 const lowPolyDetailInput = find<HTMLInputElement>(".low-poly-detail");
 const lowPolyEdgeInput = find<HTMLInputElement>(".low-poly-edge");
 const lowPolyJitterInput = find<HTMLInputElement>(".low-poly-jitter");
+const ervinControls = find<HTMLElement>(".ervin-controls");
+const ervinPointsInput = find<HTMLInputElement>(".ervin-points");
+const ervinThresholdInput = find<HTMLInputElement>(".ervin-threshold");
+const ervinBlurInput = find<HTMLInputElement>(".ervin-blur");
 
 const runner = new AnimeGanRunner();
 let selectedModel = MODELS[0];
@@ -200,6 +210,7 @@ function updateSelectedModel() {
   celControls.hidden = selectedModel.engine !== "cel";
   contourControls.hidden = selectedModel.engine !== "contour";
   lowPolyControls.hidden = selectedModel.engine !== "lowpoly";
+  ervinControls.hidden = selectedModel.engine !== "ervin";
 }
 
 function stopProcessing() {
@@ -463,6 +474,9 @@ bindRangeControl(contourThicknessInput, (value) => { runner.contourThickness = v
 bindRangeControl(lowPolyDetailInput, (value) => { runner.lowPolyDetail = value; });
 bindRangeControl(lowPolyEdgeInput, (value) => { runner.lowPolyEdgeGuidance = value / 100; }, (value) => `${value}%`);
 bindRangeControl(lowPolyJitterInput, (value) => { runner.lowPolyJitter = value / 100; }, (value) => `${value}%`);
+bindRangeControl(ervinPointsInput, (value) => { runner.ervinPoints = value; });
+bindRangeControl(ervinThresholdInput, (value) => { runner.ervinThreshold = value / 100; }, (value) => `${value}%`);
+bindRangeControl(ervinBlurInput, (value) => { runner.ervinBlur = value; }, (value) => Number(value).toFixed(1));
 window.addEventListener("beforeunload", () => {
   stopProcessing();
   releaseCamera();

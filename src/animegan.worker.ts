@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import * as ort from "onnxruntime-web/webgpu";
 import { ImageSegmenter } from "@mediapipe/tasks-vision";
+import Delaunator from "delaunator";
 import visionWasmLoader from "./vendor/mediapipe/vision_wasm_module_internal.js?url";
 import visionWasmBinary from "./vendor/mediapipe/vision_wasm_module_internal.wasm?url";
 import { vectorizeEdges, vectorizeMaskContours } from "./vectorize-edges";
@@ -10,7 +11,7 @@ type LoadMessage = {
   requestId: number;
   url?: string;
   stride: 8 | 16;
-  engine: "animegan" | "palette" | "cel" | "contour" | "lowpoly";
+  engine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin";
   colorOrder: "rgb" | "bgr";
 };
 type RenderMessage = {
@@ -30,12 +31,15 @@ type RenderMessage = {
   lowPolyDetail: number;
   lowPolyEdgeGuidance: number;
   lowPolyJitter: number;
+  ervinPoints: number;
+  ervinThreshold: number;
+  ervinBlur: number;
 };
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
-let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" = "animegan";
+let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin" = "animegan";
 let modelColorOrder: "rgb" | "bgr" = "rgb";
 let modelStride: 8 | 16 = 8;
 const canvas = new OffscreenCanvas(1, 1);
@@ -44,6 +48,10 @@ const maskCanvas = new OffscreenCanvas(1, 1);
 const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true })!;
 const lowPolyCanvas = new OffscreenCanvas(1, 1);
 const lowPolyContext = lowPolyCanvas.getContext("2d", { willReadFrequently: true })!;
+const ervinSourceCanvas = new OffscreenCanvas(1, 1);
+const ervinSourceContext = ervinSourceCanvas.getContext("2d", { willReadFrequently: true })!;
+const ervinBlurCanvas = new OffscreenCanvas(1, 1);
+const ervinBlurContext = ervinBlurCanvas.getContext("2d", { willReadFrequently: true })!;
 
 function send(message: object, transfer: Transferable[] = []) {
   self.postMessage(message, { transfer });
@@ -547,6 +555,132 @@ function lowPolyFrame(
   return lowPolyContext.getImageData(0, 0, width, height).data;
 }
 
+function ervinFrame(
+  original: ImageData,
+  alpha: Uint8ClampedArray,
+  backgroundColor: number[],
+  pointBudget: number,
+  threshold: number,
+  blurRadius: number,
+) {
+  const { width, height } = original;
+  const composited = new Uint8ClampedArray(original.data.length);
+  const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
+  for (let pixel = 0; pixel < composited.length; pixel += 4) {
+    const mix = alpha[pixel] / 255;
+    composited[pixel] = original.data[pixel] * mix + backgroundRed * (1 - mix);
+    composited[pixel + 1] = original.data[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    composited[pixel + 2] = original.data[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    composited[pixel + 3] = 255;
+  }
+
+  // Ervin Szilagyi's pipeline starts with a small Gaussian blur before edge
+  // detection. Canvas blur is GPU-accelerated where available and gives the
+  // same useful noise suppression without shipping an image-processing stack.
+  ervinSourceCanvas.width = width;
+  ervinSourceCanvas.height = height;
+  ervinSourceContext.putImageData(new ImageData(composited, width, height), 0, 0);
+  ervinBlurCanvas.width = width;
+  ervinBlurCanvas.height = height;
+  ervinBlurContext.clearRect(0, 0, width, height);
+  ervinBlurContext.filter = `blur(${Math.max(0, blurRadius) * width / 256}px)`;
+  ervinBlurContext.drawImage(ervinSourceCanvas, 0, 0);
+  ervinBlurContext.filter = "none";
+  const blurred = ervinBlurContext.getImageData(0, 0, width, height).data;
+
+  const luminance = new Float32Array(width * height);
+  for (let pixel = 0, sample = 0; pixel < blurred.length; pixel += 4, sample += 1) {
+    luminance[sample] = blurred[pixel] * 0.299 + blurred[pixel + 1] * 0.587 + blurred[pixel + 2] * 0.114;
+  }
+
+  // An eight-neighbour Laplacian mirrors the detector used for the article's
+  // featured output. Values remain normalized so one threshold works at every
+  // selectable render resolution.
+  const edges = new Float32Array(width * height);
+  let edgeCount = 0;
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      const index = y * width + x;
+      const neighbours = (
+        luminance[index - width - 1] + luminance[index - width] + luminance[index - width + 1]
+        + luminance[index - 1] + luminance[index + 1]
+        + luminance[index + width - 1] + luminance[index + width] + luminance[index + width + 1]
+      );
+      const strength = Math.min(1, Math.abs(luminance[index] * 8 - neighbours) / 255);
+      edges[index] = strength;
+      if (strength >= threshold) edgeCount += 1;
+    }
+  }
+
+  // Scale the point cap with image area so a given setting produces similar
+  // facet sizes at 256, 384 and 512. The deterministic scan-and-stride cap is
+  // the same selection strategy used by the reference implementation and is
+  // more temporally stable than random sampling for video.
+  const resolutionScale = width * height / (256 * 256);
+  const maxFeaturePoints = Math.max(80, Math.min(6400, Math.round(pointBudget * resolutionScale)));
+  const stride = Math.max(1, edgeCount / maxFeaturePoints);
+  const points: MeshPoint[] = [];
+  const boundaryStep = Math.max(4, Math.sqrt(width * height / Math.max(maxFeaturePoints, 1)));
+  for (let x = 0; x < width; x += boundaryStep) {
+    points.push({ x, y: 0 }, { x, y: height - 1 });
+  }
+  for (let y = boundaryStep; y < height - boundaryStep / 2; y += boundaryStep) {
+    points.push({ x: 0, y }, { x: width - 1, y });
+  }
+  points.push(
+    { x: width - 1, y: 0 },
+    { x: width - 1, y: height - 1 },
+    { x: 0, y: height - 1 },
+  );
+
+  let qualifyingIndex = 0;
+  let nextSelection = 0;
+  let selectedFeaturePoints = 0;
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      if (edges[y * width + x] < threshold) continue;
+      if (qualifyingIndex >= nextSelection && selectedFeaturePoints < maxFeaturePoints) {
+        points.push({ x, y });
+        selectedFeaturePoints += 1;
+        nextSelection += stride;
+      }
+      qualifyingIndex += 1;
+    }
+  }
+
+  const coordinates = new Float64Array(points.length * 2);
+  points.forEach((point, index) => {
+    coordinates[index * 2] = point.x;
+    coordinates[index * 2 + 1] = point.y;
+  });
+  const triangles = new Delaunator(coordinates).triangles;
+
+  lowPolyCanvas.width = width;
+  lowPolyCanvas.height = height;
+  lowPolyContext.clearRect(0, 0, width, height);
+  lowPolyContext.lineJoin = "bevel";
+  lowPolyContext.lineWidth = 0.8;
+  for (let index = 0; index < triangles.length; index += 3) {
+    const first = points[triangles[index]];
+    const second = points[triangles[index + 1]];
+    const third = points[triangles[index + 2]];
+    const centerX = Math.max(0, Math.min(width - 1, Math.round((first.x + second.x + third.x) / 3)));
+    const centerY = Math.max(0, Math.min(height - 1, Math.round((first.y + second.y + third.y) / 3)));
+    const centerPixel = (centerY * width + centerX) * 4;
+    const color = `rgb(${composited[centerPixel]} ${composited[centerPixel + 1]} ${composited[centerPixel + 2]})`;
+    lowPolyContext.fillStyle = color;
+    lowPolyContext.strokeStyle = color;
+    lowPolyContext.beginPath();
+    lowPolyContext.moveTo(first.x, first.y);
+    lowPolyContext.lineTo(second.x, second.y);
+    lowPolyContext.lineTo(third.x, third.y);
+    lowPolyContext.closePath();
+    lowPolyContext.fill();
+    lowPolyContext.stroke();
+  }
+  return lowPolyContext.getImageData(0, 0, width, height).data;
+}
+
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
   const width = message.sourceWidth;
@@ -643,6 +777,18 @@ async function renderFrame(message: RenderMessage) {
       message.lowPolyDetail,
       message.lowPolyEdgeGuidance,
       message.lowPolyJitter,
+    );
+    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    return;
+  }
+  if (currentEngine === "ervin") {
+    const pixels = ervinFrame(
+      original,
+      alpha,
+      message.background,
+      message.ervinPoints,
+      message.ervinThreshold,
+      message.ervinBlur,
     );
     send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
     return;

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
+    "delaunator": "^5.1.0",
     "onnxruntime-web": "latest",
     "typescript": "latest",
     "vite": "latest"
