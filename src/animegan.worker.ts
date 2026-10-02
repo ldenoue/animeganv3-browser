@@ -2,6 +2,8 @@
 import * as ort from "onnxruntime-web/webgpu";
 import { ImageSegmenter } from "@mediapipe/tasks-vision";
 import Delaunator from "delaunator";
+import ImageTracer, { type ImageTracerPath } from "imagetracerjs";
+import simplify from "simplify-js";
 import visionWasmLoader from "./vendor/mediapipe/vision_wasm_module_internal.js?url";
 import visionWasmBinary from "./vendor/mediapipe/vision_wasm_module_internal.wasm?url";
 import { vectorizeEdges, vectorizeMaskContours } from "./vectorize-edges";
@@ -11,7 +13,7 @@ type LoadMessage = {
   requestId: number;
   url?: string;
   stride: 8 | 16;
-  engine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin";
+  engine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin" | "vector";
   colorOrder: "rgb" | "bgr";
 };
 type RenderMessage = {
@@ -34,12 +36,16 @@ type RenderMessage = {
   ervinPoints: number;
   ervinThreshold: number;
   ervinBlur: number;
+  vectorColors: number;
+  vectorDetail: number;
+  vectorSimplify: number;
+  vectorBlur: number;
 };
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
-let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin" = "animegan";
+let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin" | "vector" = "animegan";
 let modelColorOrder: "rgb" | "bgr" = "rgb";
 let modelStride: 8 | 16 = 8;
 const canvas = new OffscreenCanvas(1, 1);
@@ -52,6 +58,10 @@ const ervinSourceCanvas = new OffscreenCanvas(1, 1);
 const ervinSourceContext = ervinSourceCanvas.getContext("2d", { willReadFrequently: true })!;
 const ervinBlurCanvas = new OffscreenCanvas(1, 1);
 const ervinBlurContext = ervinBlurCanvas.getContext("2d", { willReadFrequently: true })!;
+const vectorSourceCanvas = new OffscreenCanvas(1, 1);
+const vectorSourceContext = vectorSourceCanvas.getContext("2d", { willReadFrequently: true })!;
+const vectorTraceCanvas = new OffscreenCanvas(1, 1);
+const vectorTraceContext = vectorTraceCanvas.getContext("2d", { willReadFrequently: true })!;
 
 function send(message: object, transfer: Transferable[] = []) {
   self.postMessage(message, { transfer });
@@ -681,6 +691,147 @@ function ervinFrame(
   return lowPolyContext.getImageData(0, 0, width, height).data;
 }
 
+function vectorPathPoints(path: ImageTracerPath, tolerance: number) {
+  if (!path.segments.length) return [];
+  const points: Array<{ x: number; y: number }> = [
+    { x: path.segments[0].x1, y: path.segments[0].y1 },
+  ];
+  for (const segment of path.segments) {
+    if (segment.type === "Q" && segment.x3 !== undefined && segment.y3 !== undefined) {
+      points.push({
+        x: segment.x1 * 0.25 + segment.x2 * 0.5 + segment.x3 * 0.25,
+        y: segment.y1 * 0.25 + segment.y2 * 0.5 + segment.y3 * 0.25,
+      });
+      points.push({ x: segment.x3, y: segment.y3 });
+    } else {
+      points.push({ x: segment.x2, y: segment.y2 });
+    }
+  }
+  return tolerance > 0 ? simplify(points, tolerance, false) : points;
+}
+
+function vectorFrame(
+  original: ImageData,
+  alpha: Uint8ClampedArray,
+  backgroundColor: number[],
+  colorCount: number,
+  traceDetail: number,
+  simplification: number,
+  blurRadius: number,
+) {
+  const { width, height } = original;
+  const composited = new Uint8ClampedArray(original.data.length);
+  const [backgroundRed, backgroundGreen, backgroundBlue] = backgroundColor;
+  for (let pixel = 0; pixel < composited.length; pixel += 4) {
+    const mix = alpha[pixel] / 255;
+    composited[pixel] = original.data[pixel] * mix + backgroundRed * (1 - mix);
+    composited[pixel + 1] = original.data[pixel + 1] * mix + backgroundGreen * (1 - mix);
+    composited[pixel + 2] = original.data[pixel + 2] * mix + backgroundBlue * (1 - mix);
+    composited[pixel + 3] = 255;
+  }
+
+  const detail = Math.max(48, Math.min(192, Math.round(traceDetail)));
+  vectorSourceCanvas.width = width;
+  vectorSourceCanvas.height = height;
+  vectorSourceContext.putImageData(new ImageData(composited, width, height), 0, 0);
+  vectorTraceCanvas.width = detail;
+  vectorTraceCanvas.height = detail;
+  vectorTraceContext.imageSmoothingEnabled = true;
+  vectorTraceContext.imageSmoothingQuality = "high";
+  vectorTraceContext.clearRect(0, 0, detail, detail);
+  vectorTraceContext.drawImage(vectorSourceCanvas, 0, 0, detail, detail);
+  const traceImage = vectorTraceContext.getImageData(0, 0, detail, detail);
+
+  const traced = ImageTracer.imagedataToTracedata(traceImage, {
+    ltres: 1,
+    qtres: 1,
+    pathomit: Math.max(2, Math.round(detail / 48)),
+    rightangleenhance: false,
+    colorsampling: 2,
+    numberofcolors: Math.max(2, Math.min(24, Math.round(colorCount))),
+    mincolorratio: 0,
+    colorquantcycles: 2,
+    layering: 0,
+    blurradius: Math.max(0, Math.min(5, Math.round(blurRadius))),
+    blurdelta: 32,
+  });
+
+  lowPolyCanvas.width = width;
+  lowPolyCanvas.height = height;
+  const paletteCounts = new Uint32Array(traced.palette.length);
+  for (let pixel = 0; pixel < traceImage.data.length; pixel += 4) {
+    let closest = 0;
+    let closestDistance = Infinity;
+    traced.palette.forEach((color, colorIndex) => {
+      const red = traceImage.data[pixel] - color.r;
+      const green = traceImage.data[pixel + 1] - color.g;
+      const blue = traceImage.data[pixel + 2] - color.b;
+      const distance = red * red + green * green + blue * blue;
+      if (distance < closestDistance) {
+        closest = colorIndex;
+        closestDistance = distance;
+      }
+    });
+    paletteCounts[closest] += 1;
+  }
+  let dominantIndex = 0;
+  for (let index = 1; index < paletteCounts.length; index += 1) {
+    if (paletteCounts[index] > paletteCounts[dominantIndex]) dominantIndex = index;
+  }
+  const dominant = traced.palette[dominantIndex] ?? { r: 0, g: 0, b: 0, a: 255 };
+  const colorHex = (color: { r: number; g: number; b: number }) => `#${[color.r, color.g, color.b]
+    .map((channel) => Math.round(channel).toString(16).padStart(2, "0"))
+    .join("")}`;
+  const dominantHex = colorHex(dominant);
+  lowPolyContext.fillStyle = `rgba(${dominant.r} ${dominant.g} ${dominant.b} / ${dominant.a / 255})`;
+  lowPolyContext.fillRect(0, 0, width, height);
+  const scaleX = width / traced.width;
+  const scaleY = height / traced.height;
+  const coordinate = (value: number) => String(Number(value.toFixed(1)));
+  const pointCache = new Map<ImageTracerPath, Array<{ x: number; y: number }>>();
+  const appendPath = (path: ImageTracerPath) => {
+    let points = pointCache.get(path);
+    if (!points) {
+      points = vectorPathPoints(path, Math.max(0, simplification));
+      pointCache.set(path, points);
+    }
+    if (points.length < 3) return "";
+    lowPolyContext.moveTo(points[0].x * scaleX, points[0].y * scaleY);
+    for (let index = 1; index < points.length; index += 1) {
+      lowPolyContext.lineTo(points[index].x * scaleX, points[index].y * scaleY);
+    }
+    lowPolyContext.closePath();
+    return `M${points.map((point) => `${coordinate(point.x)} ${coordinate(point.y)}`).join("L")}Z`;
+  };
+
+  const svgParts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${traced.width} ${traced.height}">`,
+    `<path fill="${dominantHex}" d="M0 0H${traced.width}V${traced.height}H0Z"/>`,
+  ];
+  traced.layers.forEach((layer, layerIndex) => {
+    const color = traced.palette[layerIndex];
+    if (!color) return;
+    const paint = `rgba(${color.r} ${color.g} ${color.b} / ${color.a / 255})`;
+    lowPolyContext.fillStyle = paint;
+    layer.forEach((path) => {
+      if (path.isholepath) return;
+      lowPolyContext.beginPath();
+      let pathData = appendPath(path);
+      if (!pathData) return;
+      for (const childIndex of path.holechildren) {
+        const hole = layer[childIndex];
+        if (hole) pathData += appendPath(hole);
+      }
+      lowPolyContext.fill("evenodd");
+      const opacity = color.a < 255 ? ` fill-opacity="${Number((color.a / 255).toFixed(3))}"` : "";
+      svgParts.push(`<path fill="${colorHex(color)}"${opacity} fill-rule="evenodd" d="${pathData}"/>`);
+    });
+  });
+  svgParts.push("</svg>");
+  const payloadBytes = new TextEncoder().encode(svgParts.join("")).byteLength;
+  return { pixels: lowPolyContext.getImageData(0, 0, width, height).data, payloadBytes };
+}
+
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
   const width = message.sourceWidth;
@@ -791,6 +942,19 @@ async function renderFrame(message: RenderMessage) {
       message.ervinBlur,
     );
     send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    return;
+  }
+  if (currentEngine === "vector") {
+    const { pixels, payloadBytes } = vectorFrame(
+      original,
+      alpha,
+      message.background,
+      message.vectorColors,
+      message.vectorDetail,
+      message.vectorSimplify,
+      message.vectorBlur,
+    );
+    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height, payloadBytes }, [pixels.buffer]);
     return;
   }
   const rgb = new Float32Array(width * height * 3);

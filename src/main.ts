@@ -62,7 +62,7 @@ root.innerHTML = `
         <div class="control-bar">
           <div class="status status-idle"><span></span><span id="status-text">Drop a video to begin</span></div>
           <button class="run-button" type="button"><span class="run-spinner" aria-hidden="true"></span><span class="run-icon">${icon("play", 17)}</span><span class="run-label">Run model</span></button>
-          <div class="live-stats" hidden><b>—</b> FPS <button type="button">${icon("restart", 15)} Restart</button></div>
+          <div class="live-stats" hidden><span class="fps-stat"><b>—</b> FPS</span><span class="payload-size" hidden><b>—</b> SVG BYTES</span><button type="button">${icon("restart", 15)} Restart</button></div>
         </div>
       </section>
       <section class="style-strip">
@@ -116,6 +116,13 @@ root.innerHTML = `
         <label><span>EDGE THRESHOLD <output>5%</output></span><input class="ervin-threshold" type="range" min="2" max="60" step="1" value="5" aria-label="Ervin edge threshold"></label>
         <label><span>BLUR <output>1.0</output></span><input class="ervin-blur" type="range" min="0" max="6" step="0.5" value="1" aria-label="Ervin blur radius"></label>
       </section>
+      <section class="effect-controls vector-controls" hidden>
+        <span class="step">VECTOR</span>
+        <label><span>COLORS <output>12</output></span><input class="vector-colors" type="range" min="2" max="24" step="1" value="12" aria-label="Vector color count"></label>
+        <label><span>TRACE DETAIL <output>128</output></span><input class="vector-detail" type="range" min="64" max="192" step="16" value="128" aria-label="Vector trace detail"></label>
+        <label><span>SIMPLIFY <output>1.50</output></span><input class="vector-simplify" type="range" min="0" max="6" step="0.25" value="1.5" aria-label="Vector path simplification"></label>
+        <label><span>BLUR <output>1</output></span><input class="vector-blur" type="range" min="0" max="5" step="1" value="1" aria-label="Vector selective blur radius"></label>
+      </section>
     </main>
     <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
   </div>`;
@@ -141,6 +148,8 @@ const runButton = find<HTMLButtonElement>(".run-button");
 const runLabel = find<HTMLElement>(".run-label");
 const liveStats = find<HTMLElement>(".live-stats");
 const fpsText = find<HTMLElement>(".live-stats b");
+const payloadSize = find<HTMLElement>(".payload-size");
+const payloadText = find<HTMLElement>(".payload-size b");
 const restartButton = find<HTMLButtonElement>(".live-stats button");
 const styleButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-model]")];
 const resolutionInput = find<HTMLSelectElement>(".resolution-picker select");
@@ -166,6 +175,11 @@ const ervinControls = find<HTMLElement>(".ervin-controls");
 const ervinPointsInput = find<HTMLInputElement>(".ervin-points");
 const ervinThresholdInput = find<HTMLInputElement>(".ervin-threshold");
 const ervinBlurInput = find<HTMLInputElement>(".ervin-blur");
+const vectorControls = find<HTMLElement>(".vector-controls");
+const vectorColorsInput = find<HTMLInputElement>(".vector-colors");
+const vectorDetailInput = find<HTMLInputElement>(".vector-detail");
+const vectorSimplifyInput = find<HTMLInputElement>(".vector-simplify");
+const vectorBlurInput = find<HTMLInputElement>(".vector-blur");
 
 const runner = new AnimeGanRunner();
 let selectedModel = MODELS[0];
@@ -211,6 +225,8 @@ function updateSelectedModel() {
   contourControls.hidden = selectedModel.engine !== "contour";
   lowPolyControls.hidden = selectedModel.engine !== "lowpoly";
   ervinControls.hidden = selectedModel.engine !== "ervin";
+  vectorControls.hidden = selectedModel.engine !== "vector";
+  payloadSize.hidden = selectedModel.engine !== "vector";
 }
 
 function stopProcessing() {
@@ -256,6 +272,7 @@ function clearVideo() {
   dropZone.hidden = false;
   setProcessing(false);
   fpsText.textContent = "—";
+  payloadText.textContent = "—";
   setStatus("idle", "Drop a video to begin");
 }
 
@@ -273,6 +290,7 @@ function loadVideo(url: string, name: string, revokeOnRelease: boolean) {
   dropZone.hidden = true;
   workspace.hidden = false;
   fpsText.textContent = "—";
+  payloadText.textContent = "—";
   setProcessing(false);
   setStatus("loading", "Preparing video…");
 }
@@ -310,6 +328,7 @@ async function startWebcam() {
     dropZone.hidden = true;
     workspace.hidden = false;
     fpsText.textContent = "—";
+    payloadText.textContent = "—";
     sourceMessage.textContent = "";
     setProcessing(false);
     setStatus("loading", "Starting webcam…");
@@ -342,9 +361,10 @@ async function processNextFrame() {
   if (!running || video.paused || video.ended) return;
   const started = performance.now();
   try {
-    await runner.render(video, video.videoWidth, video.videoHeight, canvas);
+    const result = await runner.render(video, video.videoWidth, video.videoHeight, canvas);
     const elapsed = performance.now() - started;
     fpsText.textContent = (1000 / elapsed).toFixed(1);
+    payloadText.textContent = result.payloadBytes === undefined ? "—" : result.payloadBytes.toLocaleString();
     setStatus("ready", `Live · ${Math.round(elapsed)} ms/frame`);
   } catch (error) {
     stopProcessing();
@@ -391,6 +411,7 @@ function chooseModel(model: AnimeModel) {
   selectedModel = model;
   setProcessing(false);
   fpsText.textContent = "—";
+  payloadText.textContent = "—";
   resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
   updateSelectedModel();
@@ -477,6 +498,10 @@ bindRangeControl(lowPolyJitterInput, (value) => { runner.lowPolyJitter = value /
 bindRangeControl(ervinPointsInput, (value) => { runner.ervinPoints = value; });
 bindRangeControl(ervinThresholdInput, (value) => { runner.ervinThreshold = value / 100; }, (value) => `${value}%`);
 bindRangeControl(ervinBlurInput, (value) => { runner.ervinBlur = value; }, (value) => Number(value).toFixed(1));
+bindRangeControl(vectorColorsInput, (value) => { runner.vectorColors = value; });
+bindRangeControl(vectorDetailInput, (value) => { runner.vectorDetail = value; });
+bindRangeControl(vectorSimplifyInput, (value) => { runner.vectorSimplify = value; }, (value) => Number(value).toFixed(2));
+bindRangeControl(vectorBlurInput, (value) => { runner.vectorBlur = value; });
 window.addEventListener("beforeunload", () => {
   stopProcessing();
   releaseCamera();

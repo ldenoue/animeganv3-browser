@@ -5,7 +5,7 @@ export type Backend = "webgpu" | "wasm" | "canvas";
 type Reply =
   | { type: "progress"; received: number; total: number }
   | { type: "loaded"; requestId: number; backend: Backend }
-  | { type: "frame"; requestId: number; pixels: ArrayBuffer; width: number; height: number; sourceWidth: number; sourceHeight: number }
+  | { type: "frame"; requestId: number; pixels: ArrayBuffer; width: number; height: number; sourceWidth: number; sourceHeight: number; payloadBytes?: number }
   | { type: "error"; requestId: number; message: string };
 
 export class AnimeGanRunner {
@@ -35,6 +35,10 @@ export class AnimeGanRunner {
   ervinPoints = 1200;
   ervinThreshold = 0.05;
   ervinBlur = 1;
+  vectorColors = 12;
+  vectorDetail = 128;
+  vectorSimplify = 1.5;
+  vectorBlur = 1;
 
   private ensureWorker() {
     if (this.worker) return this.worker;
@@ -138,6 +142,10 @@ export class AnimeGanRunner {
       ervinPoints: this.ervinPoints,
       ervinThreshold: this.ervinThreshold,
       ervinBlur: this.ervinBlur,
+      vectorColors: this.vectorColors,
+      vectorDetail: this.vectorDetail,
+      vectorSimplify: this.vectorSimplify,
+      vectorBlur: this.vectorBlur,
     }, [bitmap]);
     if (reply.type !== "frame") throw new Error("Unexpected frame response");
 
@@ -147,5 +155,6 @@ export class AnimeGanRunner {
     output.width = reply.sourceWidth;
     output.height = reply.sourceHeight;
     output.getContext("2d")!.drawImage(this.frameCanvas, 0, 0, reply.sourceWidth, reply.sourceHeight);
+    return { payloadBytes: reply.payloadBytes };
   }
 }

@@ -68,8 +68,8 @@ h1 em { color: #e4562a; font-family: 'Playfair Display', serif; font-weight: 600
 @keyframes pulse { 50% { opacity: .25; } }
 .run-button { margin: 0; display: flex; align-items: center; gap: 9px; background: #e4562a; padding: 12px 18px; }
 .run-button:disabled { opacity: .45; cursor: wait; }
-.live-stats { display: flex; align-items: center; gap: 6px; color: #8a8980; font: 10px DM Mono, monospace; }
-.live-stats b { font-size: 15px; color: #252621; margin-left: 8px; }.live-stats button { margin-left: 15px; }
+.live-stats { display: flex; align-items: center; gap: 16px; color: #8a8980; font: 10px DM Mono, monospace; }
+.live-stats > span { display: flex; align-items: baseline; gap: 6px; }.live-stats b { font-size: 15px; color: #252621; }.live-stats button { margin-left: 4px; }
 .style-strip { margin-top: 25px; border-top: 1px solid #c9c3b8; border-bottom: 1px solid #c9c3b8; min-height: 82px; display: flex; align-items: stretch; }
 .style-strip > .step { display: flex; align-items: center; min-width: 84px; }
 .style-options { display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr)); flex: 1; }
@@ -94,6 +94,7 @@ h1 em { color: #e4562a; font-family: 'Playfair Display', serif; font-weight: 600
 .segmentation-toggle strong, .mirror-toggle strong { color: #55564f; font: 8px DM Mono, monospace; letter-spacing: .1em; }
 .segmentation-toggle small, .mirror-toggle small { color: #8a887f; font-size: 10px; }
 .effect-controls { margin-top: 12px; border: 1px solid #c9c3b8; background: rgba(255,255,255,.25); min-height: 68px; padding: 0 18px; display: grid; grid-template-columns: auto repeat(3, minmax(170px, 1fr)); align-items: center; gap: 24px; }
+.vector-controls { grid-template-columns: auto repeat(4, minmax(125px, 1fr)); gap: 18px; }
 .effect-controls[hidden] { display: none; }
 .effect-controls label { display: flex; flex-direction: column; gap: 9px; }
 .effect-controls label span { color: #696960; font: 8px DM Mono, monospace; letter-spacing: .1em; display: flex; justify-content: space-between; }

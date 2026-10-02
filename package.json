@@ -11,7 +11,9 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
     "delaunator": "^5.1.0",
+    "imagetracerjs": "^1.2.6",
     "onnxruntime-web": "latest",
+    "simplify-js": "^1.2.4",
     "typescript": "latest",
     "vite": "latest"
   }
