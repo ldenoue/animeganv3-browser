@@ -8,7 +8,7 @@ import visionWasmLoader from "./vendor/mediapipe/vision_wasm_module_internal.js?
 import visionWasmBinary from "./vendor/mediapipe/vision_wasm_module_internal.wasm?url";
 import { vectorizeEdges, vectorizeMaskContours } from "./vectorize-edges";
 
-type SegmentationModel = "selfie" | "multiclass" | "multiclass-category";
+type SegmentationModel = "selfie" | "multiclass" | "multiclass-category" | "modnet";
 
 type LoadMessage = {
   type: "load";
@@ -27,6 +27,7 @@ type RenderMessage = {
   background: number[];
   useMediaPipe: boolean;
   segmentationModel: SegmentationModel;
+  segmentAfterEffect: boolean;
   celLevels: number;
   celEdgeThreshold: number;
   celEdgeThickness: number;
@@ -46,6 +47,7 @@ type RenderMessage = {
 };
 
 let session: ort.InferenceSession | undefined;
+let modnetSession: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
 let segmentationModel: SegmentationModel | undefined;
 let segmentationTimestamp = 0;
@@ -114,6 +116,25 @@ async function ensureSegmenter(model: SegmentationModel) {
     }, { ...options, baseOptions: { ...options.baseOptions, delegate: "CPU" } });
   }
   segmentationModel = model;
+}
+
+async function ensureModnet() {
+  if (modnetSession) return;
+  const modelUrl = `${import.meta.env.BASE_URL}models/modnet_fp16.onnx`;
+  const hasWebGpu = "gpu" in navigator;
+  try {
+    modnetSession = await ort.InferenceSession.create(modelUrl, {
+      executionProviders: hasWebGpu ? ["webgpu"] : ["wasm"],
+      graphOptimizationLevel: "all",
+    });
+  } catch (error) {
+    if (!hasWebGpu) throw error;
+    console.warn("MODNet WebGPU setup failed; falling back to WASM.", error);
+    modnetSession = await ort.InferenceSession.create(modelUrl, {
+      executionProviders: ["wasm"],
+      graphOptimizationLevel: "all",
+    });
+  }
 }
 
 async function loadModel({ requestId, url, stride, engine, colorOrder }: LoadMessage) {
@@ -866,8 +887,57 @@ function vectorFrame(
 }
 
 let maskPixels = new Uint8ClampedArray(0);
+const MODNET_SIZE = 512;
+const modnetInput = new Float32Array(3 * MODNET_SIZE * MODNET_SIZE);
+
+function scaledPersonAlpha(width: number, height: number, maskWidth: number, maskHeight: number) {
+  if (width === maskWidth && height === maskHeight) return maskPixels;
+  maskCanvas.width = maskWidth;
+  maskCanvas.height = maskHeight;
+  maskContext.putImageData(new ImageData(maskPixels, maskWidth, maskHeight), 0, 0);
+  scaledMaskCanvas.width = width;
+  scaledMaskCanvas.height = height;
+  scaledMaskContext.imageSmoothingEnabled = true;
+  scaledMaskContext.clearRect(0, 0, width, height);
+  scaledMaskContext.drawImage(maskCanvas, 0, 0, width, height);
+  return scaledMaskContext.getImageData(0, 0, width, height).data;
+}
+
+async function modnetAlpha(width: number, height: number) {
+  segmentationCanvas.width = MODNET_SIZE;
+  segmentationCanvas.height = MODNET_SIZE;
+  segmentationContext.clearRect(0, 0, MODNET_SIZE, MODNET_SIZE);
+  segmentationContext.drawImage(canvas, 0, 0, MODNET_SIZE, MODNET_SIZE);
+  const pixels = segmentationContext.getImageData(0, 0, MODNET_SIZE, MODNET_SIZE).data;
+  const planeSize = MODNET_SIZE * MODNET_SIZE;
+  for (let pixel = 0, rgba = 0; pixel < planeSize; pixel += 1, rgba += 4) {
+    modnetInput[pixel] = pixels[rgba] / 127.5 - 1;
+    modnetInput[planeSize + pixel] = pixels[rgba + 1] / 127.5 - 1;
+    modnetInput[planeSize * 2 + pixel] = pixels[rgba + 2] / 127.5 - 1;
+  }
+  const results = await modnetSession!.run({
+    input: new ort.Tensor("float32", modnetInput, [1, 3, MODNET_SIZE, MODNET_SIZE]),
+  });
+  const output = results.output ?? results[modnetSession!.outputNames[0]];
+  if (!output) throw new Error("MODNet did not return an alpha matte");
+  const matte = output.data as Float32Array;
+  const maskWidth = output.dims[3] ?? MODNET_SIZE;
+  const maskHeight = output.dims[2] ?? MODNET_SIZE;
+  const length = maskWidth * maskHeight * 4;
+  if (maskPixels.length !== length) maskPixels = new Uint8ClampedArray(length);
+  for (let i = 0, out = 0; i < matte.length; i += 1) {
+    const value = Math.round(Math.max(0, Math.min(1, matte[i])) * 255);
+    maskPixels[out++] = value;
+    maskPixels[out++] = value;
+    maskPixels[out++] = value;
+    maskPixels[out++] = 255;
+  }
+  return scaledPersonAlpha(width, height, maskWidth, maskHeight);
+}
 
 function personAlpha(width: number, height: number, model: SegmentationModel) {
+  segmentationCanvas.width = 256;
+  segmentationCanvas.height = 256;
   segmentationContext.clearRect(0, 0, 256, 256);
   segmentationContext.drawImage(canvas, 0, 0, 256, 256);
 
@@ -916,16 +986,16 @@ function personAlpha(width: number, height: number, model: SegmentationModel) {
   });
   if (!maskWidth || !maskHeight) throw new Error("MediaPipe did not return a mask");
 
-  if (width === maskWidth && height === maskHeight) return maskPixels;
-  maskCanvas.width = maskWidth;
-  maskCanvas.height = maskHeight;
-  maskContext.putImageData(new ImageData(maskPixels, maskWidth, maskHeight), 0, 0);
-  scaledMaskCanvas.width = width;
-  scaledMaskCanvas.height = height;
-  scaledMaskContext.imageSmoothingEnabled = true;
-  scaledMaskContext.clearRect(0, 0, width, height);
-  scaledMaskContext.drawImage(maskCanvas, 0, 0, width, height);
-  return scaledMaskContext.getImageData(0, 0, width, height).data;
+  return scaledPersonAlpha(width, height, maskWidth, maskHeight);
+}
+
+async function segmentationAlpha(width: number, height: number, model: SegmentationModel) {
+  if (model === "modnet") {
+    await ensureModnet();
+    return modnetAlpha(width, height);
+  }
+  await ensureSegmenter(model);
+  return personAlpha(width, height, model);
 }
 
 async function renderFrame(message: RenderMessage) {
@@ -959,18 +1029,61 @@ async function renderFrame(message: RenderMessage) {
   const original = context.getImageData(0, 0, width, height);
 
   let alpha: Uint8ClampedArray;
-  if (message.useMediaPipe) {
-    await ensureSegmenter(message.segmentationModel);
-    alpha = personAlpha(width, height, message.segmentationModel);
+  if (message.useMediaPipe && !message.segmentAfterEffect) {
+    alpha = await segmentationAlpha(width, height, message.segmentationModel);
   } else {
     alpha = new Uint8ClampedArray(width * height * 4);
     alpha.fill(255);
   }
+  let maskPreview = message.useMediaPipe && !message.segmentAfterEffect ? new Uint8ClampedArray(alpha) : undefined;
+  const sendFrame = async (pixels: Uint8ClampedArray, payloadBytes?: number) => {
+    if (message.useMediaPipe && message.segmentAfterEffect) {
+      context.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+      const postEffectAlpha = await segmentationAlpha(width, height, message.segmentationModel);
+      maskPreview = new Uint8ClampedArray(postEffectAlpha);
+      for (let pixel = 0; pixel < pixels.length; pixel += 4) {
+        const mix = postEffectAlpha[pixel] / 255;
+        pixels[pixel] = pixels[pixel] * mix + message.background[0] * (1 - mix);
+        pixels[pixel + 1] = pixels[pixel + 1] * mix + message.background[1] * (1 - mix);
+        pixels[pixel + 2] = pixels[pixel + 2] * mix + message.background[2] * (1 - mix);
+      }
+    }
+    const response: {
+      type: "frame";
+      requestId: number;
+      pixels: ArrayBuffer;
+      width: number;
+      height: number;
+      sourceWidth: number;
+      sourceHeight: number;
+      payloadBytes?: number;
+      maskPixels?: ArrayBuffer;
+      maskWidth?: number;
+      maskHeight?: number;
+    } = {
+      type: "frame",
+      requestId: message.requestId,
+      pixels: pixels.buffer as ArrayBuffer,
+      width,
+      height,
+      sourceWidth: width,
+      sourceHeight: height,
+      payloadBytes,
+    };
+    const transfer: Transferable[] = [pixels.buffer];
+    if (maskPreview) {
+      response.maskPixels = maskPreview.buffer as ArrayBuffer;
+      response.maskWidth = width;
+      response.maskHeight = height;
+      transfer.push(maskPreview.buffer);
+    }
+    send(response, transfer);
+  };
   const rgba = original.data;
   const [backgroundRed, backgroundGreen, backgroundBlue] = message.background;
   if (currentEngine === "palette") {
-    const pixels = paletteFrame(original, alpha, message.background, message.useMediaPipe);
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    const pixels = paletteFrame(original, alpha, message.background, message.useMediaPipe && !message.segmentAfterEffect);
+    await sendFrame(pixels);
     return;
   }
   if (currentEngine === "cel") {
@@ -982,7 +1095,7 @@ async function renderFrame(message: RenderMessage) {
       message.celEdgeThreshold,
       message.celEdgeThickness,
     );
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    await sendFrame(pixels);
     return;
   }
   if (currentEngine === "contour") {
@@ -994,7 +1107,7 @@ async function renderFrame(message: RenderMessage) {
       message.contourLevels,
       message.contourThickness,
     );
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    await sendFrame(pixels);
     return;
   }
   if (currentEngine === "lowpoly") {
@@ -1006,7 +1119,7 @@ async function renderFrame(message: RenderMessage) {
       message.lowPolyEdgeGuidance,
       message.lowPolyJitter,
     );
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    await sendFrame(pixels);
     return;
   }
   if (currentEngine === "ervin") {
@@ -1018,7 +1131,7 @@ async function renderFrame(message: RenderMessage) {
       message.ervinThreshold,
       message.ervinBlur,
     );
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+    await sendFrame(pixels);
     return;
   }
   if (currentEngine === "vector") {
@@ -1031,7 +1144,7 @@ async function renderFrame(message: RenderMessage) {
       message.vectorSimplify,
       message.vectorBlur,
     );
-    send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height, payloadBytes }, [pixels.buffer]);
+    await sendFrame(pixels, payloadBytes);
     return;
   }
   const rgb = new Float32Array(width * height * 3);
@@ -1056,7 +1169,7 @@ async function renderFrame(message: RenderMessage) {
     pixels[out++] = Math.max(0, Math.min(255, (blue + 1) * 127.5));
     pixels[out++] = 255;
   }
-  send({ type: "frame", requestId: message.requestId, pixels: pixels.buffer, width, height, sourceWidth: width, sourceHeight: height }, [pixels.buffer]);
+  await sendFrame(pixels);
 }
 
 async function handleMessage(data: LoadMessage | RenderMessage) {

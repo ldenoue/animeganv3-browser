@@ -1,12 +1,12 @@
 import type { AnimeModel } from "./models";
 
 export type Backend = "webgpu" | "wasm" | "canvas";
-export type SegmentationModel = "selfie" | "multiclass" | "multiclass-category";
+export type SegmentationModel = "selfie" | "multiclass" | "multiclass-category" | "modnet";
 
 type Reply =
   | { type: "progress"; received: number; total: number }
   | { type: "loaded"; requestId: number; backend: Backend }
-  | { type: "frame"; requestId: number; pixels: ArrayBuffer; width: number; height: number; sourceWidth: number; sourceHeight: number; payloadBytes?: number }
+  | { type: "frame"; requestId: number; pixels: ArrayBuffer; width: number; height: number; sourceWidth: number; sourceHeight: number; payloadBytes?: number; maskPixels?: ArrayBuffer; maskWidth?: number; maskHeight?: number }
   | { type: "error"; requestId: number; message: string };
 
 export class AnimeGanRunner {
@@ -23,6 +23,7 @@ export class AnimeGanRunner {
   backgroundColor = "#00ff00";
   useMediaPipe = false;
   segmentationModel: SegmentationModel = "multiclass";
+  segmentAfterEffect = false;
   mirrorInput = false;
   inputSize = 256;
   celLevels = 8;
@@ -98,7 +99,7 @@ export class AnimeGanRunner {
     this.progress = undefined;
   }
 
-  async render(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, output: HTMLCanvasElement) {
+  async render(source: CanvasImageSource, sourceWidth: number, sourceHeight: number, output: HTMLCanvasElement, maskOutput: HTMLCanvasElement) {
     if (!this.model) throw new Error("Model is not loaded");
     if (source instanceof HTMLVideoElement && source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
       throw new Error("Waiting for the first decoded video frame");
@@ -133,6 +134,7 @@ export class AnimeGanRunner {
       background,
       useMediaPipe: this.useMediaPipe,
       segmentationModel: this.segmentationModel,
+      segmentAfterEffect: this.segmentAfterEffect,
       celLevels: this.celLevels,
       celEdgeThreshold: this.celEdgeThreshold,
       celEdgeThickness: this.celEdgeThickness,
@@ -158,6 +160,18 @@ export class AnimeGanRunner {
     output.width = reply.sourceWidth;
     output.height = reply.sourceHeight;
     output.getContext("2d")!.drawImage(this.frameCanvas, 0, 0, reply.sourceWidth, reply.sourceHeight);
-    return { payloadBytes: reply.payloadBytes };
+    const hasMask = Boolean(reply.maskPixels && reply.maskWidth && reply.maskHeight);
+    if (reply.maskPixels && reply.maskWidth && reply.maskHeight) {
+      maskOutput.width = reply.maskWidth;
+      maskOutput.height = reply.maskHeight;
+      maskOutput.getContext("2d")!.putImageData(
+        new ImageData(new Uint8ClampedArray(reply.maskPixels), reply.maskWidth, reply.maskHeight),
+        0,
+        0,
+      );
+    } else {
+      maskOutput.getContext("2d")?.clearRect(0, 0, maskOutput.width, maskOutput.height);
+    }
+    return { payloadBytes: reply.payloadBytes, hasMask };
   }
 }

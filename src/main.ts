@@ -28,7 +28,7 @@ root.innerHTML = `
       <section class="intro">
         <div class="eyebrow"><span>01</span> VIDEO TO ANIME</div>
         <h1>See your world<br><em>drawn differently.</em></h1>
-        <p>Drop in a video and your selected model redraws each frame locally. Optionally enable MediaPipe to place detected people on chroma green first.</p>
+        <p>Drop in a video and your selected model redraws each frame locally. Optionally enable person masking to place detected people on chroma green first.</p>
       </section>
       <div class="drop-zone">
         <input id="file-input" type="file" accept="video/*">
@@ -52,6 +52,11 @@ root.innerHTML = `
             <div class="tile-label"><span>ORIGINAL</span><small>INPUT</small></div>
             <video muted loop playsinline preload="auto" controls></video>
             <div class="crop-guide"><span>FULL HEIGHT · 256²</span></div>
+          </article>
+          <article class="tile mask-tile">
+            <div class="tile-label"><span>MASK</span><small id="mask-model-label">OFF</small></div>
+            <canvas hidden></canvas>
+            <div class="mask-empty"><span>Enable person mask<br>to inspect raw alpha</span></div>
           </article>
           <article class="tile result-tile">
             <div class="tile-label"><span id="result-model"></span><small id="result-backend">FULL FRAME</small></div>
@@ -89,11 +94,16 @@ root.innerHTML = `
         </label>
         <label class="segmentation-picker">
           <span>MASK MODEL</span>
-          <select aria-label="MediaPipe person segmentation model" disabled>
+          <select aria-label="Person segmentation model" disabled>
             <option value="selfie">Selfie · Soft</option>
             <option value="multiclass" selected>Multiclass · Soft</option>
             <option value="multiclass-category">Multiclass · Fast</option>
+            <option value="modnet">MODNet · Portrait Matte</option>
           </select>
+        </label>
+        <label class="segmentation-order-toggle">
+          <input type="checkbox" disabled>
+          <span><strong>MASK AFTER EFFECT</strong><small>Before effect</small></span>
         </label>
         <label class="mirror-toggle">
           <input type="checkbox">
@@ -132,7 +142,7 @@ root.innerHTML = `
         <label><span>BLUR <output>1</output></span><input class="vector-blur" type="range" min="0" max="5" step="1" value="1" aria-label="Vector selective blur radius"></label>
       </section>
     </main>
-    <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a> and <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a> licenses</span></footer>
+    <footer><span>CARTOONIZATION · LOCAL INFERENCE</span><span>Model use is subject to the upstream <a href="https://github.com/TachibanaYoshino/AnimeGANv3#-license" target="_blank" rel="noreferrer">AnimeGANv3</a>, <a href="https://github.com/SystemErrorWang/White-box-Cartoonization#license" target="_blank" rel="noreferrer">White-box</a>, and <a href="https://github.com/ZHKKKe/MODNet/blob/master/LICENSE" target="_blank" rel="noreferrer">MODNet</a> licenses</span></footer>
   </div>`;
 
 const find = <T extends Element>(selector: string) => document.querySelector<T>(selector)!;
@@ -145,6 +155,9 @@ const workspace = find<HTMLElement>(".workspace");
 const fileName = find<HTMLElement>("#file-name");
 const removeButton = find<HTMLButtonElement>(".remove");
 const video = find<HTMLVideoElement>(".source-tile video");
+const maskCanvas = find<HTMLCanvasElement>(".mask-tile canvas");
+const maskEmpty = find<HTMLElement>(".mask-empty");
+const maskModelLabel = find<HTMLElement>("#mask-model-label");
 const canvas = find<HTMLCanvasElement>(".result-tile canvas");
 const resultModel = find<HTMLElement>("#result-model");
 const resultBackend = find<HTMLElement>("#result-backend");
@@ -166,6 +179,8 @@ const backgroundCode = find<HTMLElement>(".background-picker code");
 const maskInput = find<HTMLInputElement>(".segmentation-toggle input");
 const maskStatus = find<HTMLElement>(".segmentation-toggle small");
 const segmentationModelInput = find<HTMLSelectElement>(".segmentation-picker select");
+const segmentationOrderInput = find<HTMLInputElement>(".segmentation-order-toggle input");
+const segmentationOrderStatus = find<HTMLElement>(".segmentation-order-toggle small");
 const mirrorInput = find<HTMLInputElement>(".mirror-toggle input");
 const mirrorStatus = find<HTMLElement>(".mirror-toggle small");
 const celControls = find<HTMLElement>(".cel-controls");
@@ -267,6 +282,12 @@ function updateVideoClasses() {
   video.classList.toggle("mirrored", mirrorInput.checked);
 }
 
+function clearMaskPreview() {
+  maskCanvas.getContext("2d")?.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  maskCanvas.hidden = true;
+  maskEmpty.hidden = false;
+}
+
 function clearVideo() {
   stopProcessing();
   setModelLoading(false);
@@ -277,6 +298,7 @@ function clearVideo() {
   releaseVideoUrl();
   fileInput.value = "";
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  clearMaskPreview();
   workspace.hidden = true;
   dropZone.hidden = false;
   setProcessing(false);
@@ -301,6 +323,7 @@ function loadVideo(url: string, name: string, revokeOnRelease: boolean) {
   fpsText.textContent = "—";
   payloadText.textContent = "—";
   setProcessing(false);
+  clearMaskPreview();
   setStatus("loading", "Preparing video…");
 }
 
@@ -340,6 +363,7 @@ async function startWebcam() {
     payloadText.textContent = "—";
     sourceMessage.textContent = "";
     setProcessing(false);
+    clearMaskPreview();
     setStatus("loading", "Starting webcam…");
     await video.play();
   } catch (error) {
@@ -370,7 +394,9 @@ async function processNextFrame() {
   if (!running || video.paused || video.ended) return;
   const started = performance.now();
   try {
-    const result = await runner.render(video, video.videoWidth, video.videoHeight, canvas);
+    const result = await runner.render(video, video.videoWidth, video.videoHeight, canvas, maskCanvas);
+    maskCanvas.hidden = !result.hasMask;
+    maskEmpty.hidden = result.hasMask;
     const elapsed = performance.now() - started;
     fpsText.textContent = (1000 / elapsed).toFixed(1);
     payloadText.textContent = result.payloadBytes === undefined ? "—" : result.payloadBytes.toLocaleString();
@@ -423,6 +449,7 @@ function chooseModel(model: AnimeModel) {
   payloadText.textContent = "—";
   resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
   canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+  clearMaskPreview();
   updateSelectedModel();
   if (hasVideoSource() && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
     void beginProcessing();
@@ -473,13 +500,23 @@ maskInput.addEventListener("change", () => {
   runner.useMediaPipe = maskInput.checked;
   backgroundInput.disabled = !maskInput.checked;
   segmentationModelInput.disabled = !maskInput.checked;
+  segmentationOrderInput.disabled = !maskInput.checked;
   maskStatus.textContent = maskInput.checked ? segmentationModelInput.selectedOptions[0].textContent : "Full frame";
+  maskModelLabel.textContent = maskInput.checked ? segmentationModelInput.selectedOptions[0].textContent : "OFF";
+  if (!maskInput.checked) clearMaskPreview();
   if (!processing) resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
 });
 segmentationModelInput.addEventListener("change", () => {
   runner.segmentationModel = segmentationModelInput.value as SegmentationModel;
   maskStatus.textContent = segmentationModelInput.selectedOptions[0].textContent;
+  maskModelLabel.textContent = segmentationModelInput.selectedOptions[0].textContent;
   if (processing) setStatus("loading", `Switching to ${maskStatus.textContent}…`);
+});
+segmentationOrderInput.addEventListener("change", () => {
+  runner.segmentAfterEffect = segmentationOrderInput.checked;
+  segmentationOrderStatus.textContent = segmentationOrderInput.checked ? "After effect" : "Before effect";
+  clearMaskPreview();
+  if (processing) setStatus("loading", segmentationOrderInput.checked ? "Masking stylized frames…" : "Masking source frames…");
 });
 mirrorInput.addEventListener("change", () => {
   runner.mirrorInput = mirrorInput.checked;
