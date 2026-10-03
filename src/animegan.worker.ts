@@ -8,6 +8,8 @@ import visionWasmLoader from "./vendor/mediapipe/vision_wasm_module_internal.js?
 import visionWasmBinary from "./vendor/mediapipe/vision_wasm_module_internal.wasm?url";
 import { vectorizeEdges, vectorizeMaskContours } from "./vectorize-edges";
 
+type SegmentationModel = "selfie" | "multiclass" | "multiclass-category";
+
 type LoadMessage = {
   type: "load";
   requestId: number;
@@ -24,6 +26,7 @@ type RenderMessage = {
   sourceHeight: number;
   background: number[];
   useMediaPipe: boolean;
+  segmentationModel: SegmentationModel;
   celLevels: number;
   celEdgeThreshold: number;
   celEdgeThickness: number;
@@ -44,6 +47,8 @@ type RenderMessage = {
 
 let session: ort.InferenceSession | undefined;
 let segmenter: ImageSegmenter | undefined;
+let segmentationModel: SegmentationModel | undefined;
+let segmentationTimestamp = 0;
 let backend: "webgpu" | "wasm" | "canvas" = "wasm";
 let currentEngine: "animegan" | "palette" | "cel" | "contour" | "lowpoly" | "ervin" | "vector" = "animegan";
 let modelColorOrder: "rgb" | "bgr" = "rgb";
@@ -52,6 +57,10 @@ const canvas = new OffscreenCanvas(1, 1);
 const context = canvas.getContext("2d", { willReadFrequently: true })!;
 const maskCanvas = new OffscreenCanvas(1, 1);
 const maskContext = maskCanvas.getContext("2d", { willReadFrequently: true })!;
+const scaledMaskCanvas = new OffscreenCanvas(1, 1);
+const scaledMaskContext = scaledMaskCanvas.getContext("2d", { willReadFrequently: true })!;
+const segmentationCanvas = new OffscreenCanvas(256, 256);
+const segmentationContext = segmentationCanvas.getContext("2d", { willReadFrequently: false })!;
 const lowPolyCanvas = new OffscreenCanvas(1, 1);
 const lowPolyContext = lowPolyCanvas.getContext("2d", { willReadFrequently: true })!;
 const ervinSourceCanvas = new OffscreenCanvas(1, 1);
@@ -67,20 +76,44 @@ function send(message: object, transfer: Transferable[] = []) {
   self.postMessage(message, { transfer });
 }
 
-async function ensureSegmenter() {
-  if (segmenter) return;
-  segmenter = await ImageSegmenter.createFromOptions({
-    wasmLoaderPath: visionWasmLoader,
-    wasmBinaryPath: visionWasmBinary,
-  }, {
+async function ensureSegmenter(model: SegmentationModel) {
+  if (segmenter && segmentationModel === model) return;
+  segmentationTimestamp = 0;
+  const isSelfie = model === "selfie";
+  const isCategory = model === "multiclass-category";
+  const modelAssetPath = `${import.meta.env.BASE_URL}models/${isSelfie ? "selfie_segmenter.tflite" : "selfie_multiclass_256x256.tflite"}`;
+  if (segmenter) {
+    await segmenter.setOptions({
+      baseOptions: { modelAssetPath },
+      runningMode: "VIDEO",
+      outputCategoryMask: isCategory,
+      outputConfidenceMasks: !isCategory,
+    });
+    segmentationModel = model;
+    return;
+  }
+  const options = {
     baseOptions: {
-      modelAssetPath: `${import.meta.env.BASE_URL}models/selfie_multiclass_256x256.tflite`,
-      delegate: "CPU",
+      modelAssetPath,
+      delegate: "GPU" as const,
     },
-    runningMode: "IMAGE",
-    outputCategoryMask: false,
-    outputConfidenceMasks: true,
-  });
+    runningMode: "VIDEO" as const,
+    outputCategoryMask: isCategory,
+    outputConfidenceMasks: !isCategory,
+  };
+  try {
+    segmenter = await ImageSegmenter.createFromOptions({
+      wasmLoaderPath: visionWasmLoader,
+      wasmBinaryPath: visionWasmBinary,
+    }, options);
+  } catch (error) {
+    console.warn("MediaPipe GPU setup failed; falling back to CPU.", error);
+    segmenter = await ImageSegmenter.createFromOptions({
+      wasmLoaderPath: visionWasmLoader,
+      wasmBinaryPath: visionWasmBinary,
+    }, { ...options, baseOptions: { ...options.baseOptions, delegate: "CPU" } });
+  }
+  segmentationModel = model;
 }
 
 async function loadModel({ requestId, url, stride, engine, colorOrder }: LoadMessage) {
@@ -832,6 +865,69 @@ function vectorFrame(
   return { pixels: lowPolyContext.getImageData(0, 0, width, height).data, payloadBytes };
 }
 
+let maskPixels = new Uint8ClampedArray(0);
+
+function personAlpha(width: number, height: number, model: SegmentationModel) {
+  segmentationContext.clearRect(0, 0, 256, 256);
+  segmentationContext.drawImage(canvas, 0, 0, 256, 256);
+
+  let maskWidth = 0;
+  let maskHeight = 0;
+  segmentationTimestamp = Math.max(performance.now(), segmentationTimestamp + 0.001);
+  segmenter!.segmentForVideo(segmentationCanvas, segmentationTimestamp, (result) => {
+    if (model === "multiclass-category") {
+      const mask = result.categoryMask;
+      if (!mask) throw new Error("MediaPipe did not return a category mask");
+      const categories = mask.getAsUint8Array();
+      maskWidth = mask.width;
+      maskHeight = mask.height;
+      const length = maskWidth * maskHeight * 4;
+      if (maskPixels.length !== length) maskPixels = new Uint8ClampedArray(length);
+      for (let i = 0, out = 0; i < categories.length; i += 1) {
+        const value = categories[i] === 0 ? 0 : 255;
+        maskPixels[out++] = value;
+        maskPixels[out++] = value;
+        maskPixels[out++] = value;
+        maskPixels[out++] = 255;
+      }
+      return;
+    }
+
+    const masks = result.confidenceMasks;
+    const labels = segmenter!.getLabels().map((label) => label.toLowerCase());
+    const personIndex = labels.findIndex((label) => label === "person");
+    const fallbackIndex = Math.min(1, (masks?.length ?? 1) - 1);
+    const mask = model === "multiclass" ? masks?.[0] : masks?.[personIndex >= 0 ? personIndex : fallbackIndex] ?? masks?.[0];
+    if (!mask) throw new Error("MediaPipe did not return a person mask");
+    const confidence = mask.getAsFloat32Array();
+    maskWidth = mask.width;
+    maskHeight = mask.height;
+    const length = maskWidth * maskHeight * 4;
+    if (maskPixels.length !== length) maskPixels = new Uint8ClampedArray(length);
+    for (let i = 0, out = 0; i < confidence.length; i += 1) {
+      const rawPerson = model === "multiclass" ? 1 - confidence[i] : confidence[i];
+      const person = Math.max(0, Math.min(1, (rawPerson - 0.08) / 0.84));
+      const value = Math.round(person * person * (3 - 2 * person) * 255);
+      maskPixels[out++] = value;
+      maskPixels[out++] = value;
+      maskPixels[out++] = value;
+      maskPixels[out++] = 255;
+    }
+  });
+  if (!maskWidth || !maskHeight) throw new Error("MediaPipe did not return a mask");
+
+  if (width === maskWidth && height === maskHeight) return maskPixels;
+  maskCanvas.width = maskWidth;
+  maskCanvas.height = maskHeight;
+  maskContext.putImageData(new ImageData(maskPixels, maskWidth, maskHeight), 0, 0);
+  scaledMaskCanvas.width = width;
+  scaledMaskCanvas.height = height;
+  scaledMaskContext.imageSmoothingEnabled = true;
+  scaledMaskContext.clearRect(0, 0, width, height);
+  scaledMaskContext.drawImage(maskCanvas, 0, 0, width, height);
+  return scaledMaskContext.getImageData(0, 0, width, height).data;
+}
+
 async function renderFrame(message: RenderMessage) {
   if (currentEngine === "animegan" && !session) throw new Error("Model is not loaded");
   const width = message.sourceWidth;
@@ -864,27 +960,8 @@ async function renderFrame(message: RenderMessage) {
 
   let alpha: Uint8ClampedArray;
   if (message.useMediaPipe) {
-    await ensureSegmenter();
-    const segmentation = segmenter!.segment(canvas);
-    const backgroundMask = segmentation.confidenceMasks?.[0];
-    if (!backgroundMask) throw new Error("MediaPipe did not return a person mask");
-    const background = backgroundMask.getAsFloat32Array();
-    const maskPixels = new Uint8ClampedArray(backgroundMask.width * backgroundMask.height * 4);
-    for (let i = 0, out = 0; i < background.length; i += 1) {
-      const person = Math.max(0, Math.min(1, (1 - background[i] - 0.08) / 0.84));
-      const value = Math.round(person * person * (3 - 2 * person) * 255);
-      maskPixels[out++] = value; maskPixels[out++] = value; maskPixels[out++] = value; maskPixels[out++] = 255;
-    }
-    maskCanvas.width = backgroundMask.width;
-    maskCanvas.height = backgroundMask.height;
-    maskContext.putImageData(new ImageData(maskPixels, backgroundMask.width, backgroundMask.height), 0, 0);
-    backgroundMask.close();
-    segmentation.confidenceMasks?.slice(1).forEach((mask) => mask.close());
-    const scaledMask = new OffscreenCanvas(width, height);
-    const scaledMaskContext = scaledMask.getContext("2d", { willReadFrequently: true })!;
-    scaledMaskContext.imageSmoothingEnabled = true;
-    scaledMaskContext.drawImage(maskCanvas, 0, 0, width, height);
-    alpha = scaledMaskContext.getImageData(0, 0, width, height).data;
+    await ensureSegmenter(message.segmentationModel);
+    alpha = personAlpha(width, height, message.segmentationModel);
   } else {
     alpha = new Uint8ClampedArray(width * height * 4);
     alpha.fill(255);

@@ -1,6 +1,7 @@
 import type { AnimeModel } from "./models";
 
 export type Backend = "webgpu" | "wasm" | "canvas";
+export type SegmentationModel = "selfie" | "multiclass" | "multiclass-category";
 
 type Reply =
   | { type: "progress"; received: number; total: number }
@@ -21,6 +22,7 @@ export class AnimeGanRunner {
   model?: AnimeModel;
   backgroundColor = "#00ff00";
   useMediaPipe = false;
+  segmentationModel: SegmentationModel = "multiclass";
   mirrorInput = false;
   inputSize = 256;
   celLevels = 8;
@@ -130,6 +132,7 @@ export class AnimeGanRunner {
       sourceHeight: inputSize,
       background,
       useMediaPipe: this.useMediaPipe,
+      segmentationModel: this.segmentationModel,
       celLevels: this.celLevels,
       celEdgeThreshold: this.celEdgeThreshold,
       celEdgeThickness: this.celEdgeThickness,

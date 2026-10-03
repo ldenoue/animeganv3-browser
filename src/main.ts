@@ -1,4 +1,4 @@
-import { AnimeGanRunner, type Backend } from "./animegan";
+import { AnimeGanRunner, type Backend, type SegmentationModel } from "./animegan";
 import { MODELS, type AnimeModel } from "./models";
 import "./styles.css";
 
@@ -87,6 +87,14 @@ root.innerHTML = `
           <input type="checkbox">
           <span><strong>PERSON MASK</strong><small>Full frame</small></span>
         </label>
+        <label class="segmentation-picker">
+          <span>MASK MODEL</span>
+          <select aria-label="MediaPipe person segmentation model" disabled>
+            <option value="selfie">Selfie · Soft</option>
+            <option value="multiclass" selected>Multiclass · Soft</option>
+            <option value="multiclass-category">Multiclass · Fast</option>
+          </select>
+        </label>
         <label class="mirror-toggle">
           <input type="checkbox">
           <span><strong>MIRROR INPUT</strong><small>Off</small></span>
@@ -157,6 +165,7 @@ const backgroundInput = find<HTMLInputElement>(".background-picker input");
 const backgroundCode = find<HTMLElement>(".background-picker code");
 const maskInput = find<HTMLInputElement>(".segmentation-toggle input");
 const maskStatus = find<HTMLElement>(".segmentation-toggle small");
+const segmentationModelInput = find<HTMLSelectElement>(".segmentation-picker select");
 const mirrorInput = find<HTMLInputElement>(".mirror-toggle input");
 const mirrorStatus = find<HTMLElement>(".mirror-toggle small");
 const celControls = find<HTMLElement>(".cel-controls");
@@ -463,8 +472,14 @@ backgroundInput.addEventListener("input", () => {
 maskInput.addEventListener("change", () => {
   runner.useMediaPipe = maskInput.checked;
   backgroundInput.disabled = !maskInput.checked;
-  maskStatus.textContent = maskInput.checked ? "MediaPipe on" : "Full frame";
+  segmentationModelInput.disabled = !maskInput.checked;
+  maskStatus.textContent = maskInput.checked ? segmentationModelInput.selectedOptions[0].textContent : "Full frame";
   if (!processing) resultBackend.textContent = maskInput.checked ? "GREEN SCREEN" : "FULL FRAME";
+});
+segmentationModelInput.addEventListener("change", () => {
+  runner.segmentationModel = segmentationModelInput.value as SegmentationModel;
+  maskStatus.textContent = segmentationModelInput.selectedOptions[0].textContent;
+  if (processing) setStatus("loading", `Switching to ${maskStatus.textContent}…`);
 });
 mirrorInput.addEventListener("change", () => {
   runner.mirrorInput = mirrorInput.checked;
